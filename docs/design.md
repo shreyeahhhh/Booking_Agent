@@ -172,6 +172,11 @@ that makes an agent feel like a form.
 place names. Keeping what was actually heard means a mis-transcription is recoverable and
 visible, rather than silently overwritten by a confident-looking normalisation.
 
+**Silence and noise never reach the LLM.** `services/stt.is_noise` classifies an empty or
+hallucinated transcript before anything downstream runs, so a silent mic never burns an
+extraction call. See architecture.md's "Detecting empty/noise transcripts" for the live
+probe this was built from.
+
 **`assumptions[]` is part of the state.** When clarification is exhausted (see §5.4), the
 agent records what it assumed and surfaces it in the final summary. An agent that says
 what it guessed is more trustworthy than one that guesses silently.
