@@ -34,6 +34,7 @@ from app.domain.state import (
     Field,
     FieldStatus,
     Item,
+    Note,
     Patch,
     PatchOp,
     Revision,
@@ -174,6 +175,9 @@ def _apply_one(
 ) -> tuple[BookingState, list[str]]:
     if patch.field == "goods.items":
         return _apply_items_patch(state, patch, turn)
+
+    if patch.field == "notes":
+        return _apply_notes_patch(state, patch, turn)
 
     is_normalizable_time_patch = (
         patch.field in _TIME_FIELDS and patch.needs_normalization and patch.op in _WRITABLE_OPS
@@ -495,3 +499,30 @@ def _recompute_derived_fields(state: BookingState, turn: int) -> BookingState:
     if not updates:
         return state
     return state.model_copy(update={"service": state.service.model_copy(update=updates)})
+
+
+# --------------------------------------------------------------------------
+# Notes ("any additional requirements")
+# --------------------------------------------------------------------------
+
+
+def _apply_notes_patch(
+    state: BookingState, patch: Patch, turn: int
+) -> tuple[BookingState, list[str]]:
+    """Free-text requirements that do not map to any structured field.
+
+    Much simpler than goods.items: a Note is just text, so there is no
+    name-matching correction case to handle -- only append and clear.
+    """
+    if patch.op == PatchOp.APPEND:
+        text = str(patch.value).strip() if patch.value else ""
+        if not text:
+            return state, ["skipped empty note"]
+        new_note = Note(text=text, turn=turn)
+        new_state = state.model_copy(update={"notes": [*state.notes, new_note]})
+        return new_state, [f"added note: {text!r}"]
+
+    if patch.op == PatchOp.CLEAR:
+        return state.model_copy(update={"notes": []}), ["cleared all notes"]
+
+    return state, [f"skipped {patch.op} on notes (only append/clear are supported for a list)"]

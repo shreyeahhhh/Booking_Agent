@@ -77,7 +77,7 @@ so the suite can run on every commit.
 | 10 | **Multiple corrections in one turn** | "Make it Saturday, and it's three cupboards not two" | Both applied; both recorded. |
 | 11 | **Contradictory information** | Confirms 3rd floor, later says "ground floor" | Does not silently overwrite a `CONFIRMED` field — raises a conflict and asks which is right. |
 | 12 | **Unnecessary information** | "My landlord is being difficult about the deposit" | Goes to `unresolved_mentions`; does not become a booking field. Agent does not derail. |
-| 13 | **User changes their mind** | "Actually, let's do the whole flat, not just the sofa" | `booking_type` changes; newly-required fields (packing, more floors) appear and are asked. |
+| 13 | **User changes their mind** | "Actually, let's do the whole flat, not just the sofa" | `goods.category` corrects to `household_mixed`; newly-required fields (packing, floors for any new items) appear and are asked. `booking_type` may also be set for summary framing, but it does not gate anything (see design.md §3.4). |
 | 14 | **Incomplete answer** | Q: "Which floor and is there a lift?" A: "Third floor." | Records the floor, asks only about the lift — not both again. |
 | 15 | **Confirmation** | "Yes, that's right" | Fast path, **zero LLM calls**. Transitions to `COMPLETE`. |
 | 16 | **Rejection at summary** | "No, the date is wrong" | Enters `CORRECTING`, asks what to change, returns to `REVIEW` — does not restart gathering. |

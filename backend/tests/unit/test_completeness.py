@@ -37,7 +37,10 @@ def test_ambiguous_field_counts_as_both_missing_and_ambiguous():
     assert ambiguous[0].field_path == "drop.locality"
 
 
-def test_filling_every_required_field_clears_missing():
+def test_filling_every_required_field_clears_missing_for_a_parcel():
+    """A parcel/document booking is the one case where an item list is not
+    required (specs.py's _needs_items) -- filling the other four required
+    fields plus this category should leave nothing missing at all."""
     s = _apply(
         BookingState(),
         Patch(op=PatchOp.SET, field="pickup.locality", value="Koramangala"),
@@ -46,8 +49,22 @@ def test_filling_every_required_field_clears_missing():
         Patch(op=PatchOp.SET, field="schedule.date", value="2026-09-12"),
         Patch(op=PatchOp.SET, field="schedule.time_window", value="evening"),
     )
-    # booking_type left EMPTY -> goods.items still defaults to required (not a parcel yet)
-    assert "goods.items" in completeness.missing(s)
+    assert completeness.missing(s) == []
+
+
+def test_a_non_parcel_category_still_requires_an_item_list():
+    # commercial_goods, not furniture: isolates the items requirement without
+    # also engaging the floor/lift predicates (_goods_need_floor_handling),
+    # which only fire for furniture/appliances/household_mixed.
+    s = _apply(
+        BookingState(),
+        Patch(op=PatchOp.SET, field="pickup.locality", value="Koramangala"),
+        Patch(op=PatchOp.SET, field="drop.locality", value="Whitefield"),
+        Patch(op=PatchOp.SET, field="goods.category", value="commercial_goods"),
+        Patch(op=PatchOp.SET, field="schedule.date", value="2026-09-12"),
+        Patch(op=PatchOp.SET, field="schedule.time_window", value="evening"),
+    )
+    assert completeness.missing(s) == ["goods.items"]
 
 
 def test_conflicts_are_read_directly_off_state():

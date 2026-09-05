@@ -175,6 +175,37 @@ def test_correcting_a_bare_city_into_a_locality_clears_the_ambiguity():
     assert get_field(s2, "drop.locality").value == "Kakkanad"
 
 
+# --- Notes ("any additional requirements") ---------------------------------
+
+
+def test_appending_a_note_records_it():
+    s = _apply(
+        BookingState(), Patch(op=PatchOp.APPEND, field="notes", value="fragile, handle with care")
+    )
+    assert len(s.notes) == 1
+    assert s.notes[0].text == "fragile, handle with care"
+    assert s.notes[0].turn == 1
+
+
+def test_multiple_notes_accumulate():
+    s = _apply(BookingState(), Patch(op=PatchOp.APPEND, field="notes", value="fragile"))
+    s = _apply(s, Patch(op=PatchOp.APPEND, field="notes", value="call before arriving"))
+    assert [n.text for n in s.notes] == ["fragile", "call before arriving"]
+
+
+def test_empty_note_is_not_recorded():
+    result = apply(
+        BookingState(), [Patch(op=PatchOp.APPEND, field="notes", value="   ")], reference=REF
+    )
+    assert result.state.notes == []
+
+
+def test_clear_removes_all_notes():
+    s = _apply(BookingState(), Patch(op=PatchOp.APPEND, field="notes", value="fragile"))
+    s = _apply(s, Patch(op=PatchOp.CLEAR, field="notes"))
+    assert s.notes == []
+
+
 # --- Items and cascade invalidation ----------------------------------------
 
 
