@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime
 
-from app.domain.inference import infer_vehicle_and_helpers
+from app.domain.inference import infer_category, infer_vehicle_and_helpers
 from app.domain.normalizers import resolve_quantity_word, resolve_relative_date, resolve_time_of_day
 from app.domain.specs import field_class, get_field, with_field
 from app.domain.state import (
@@ -33,6 +33,7 @@ from app.domain.state import (
     Conflict,
     Field,
     FieldStatus,
+    GoodsCategory,
     Item,
     Note,
     Patch,
@@ -465,33 +466,42 @@ def _finish_items_change(
 
 
 def _recompute_derived_fields(state: BookingState, turn: int) -> BookingState:
-    """Re-derive vehicle/helper guesses after the item list changes.
+    """Re-derive vehicle/helper/category guesses after the item list changes.
 
-    Only ever overwrites a field that is still a system guess (EMPTY or
-    INFERRED). A field the user explicitly stated or confirmed themselves is
-    left untouched -- otherwise adding one more box after the user said
-    "actually, send a pickup truck" would silently discard their choice,
-    which is exactly the "overwriting correct information" failure mode this
-    project is built to avoid. See docs/architecture.md, "Corrections".
+    Only ever overwrites a field that is still a system guess (EMPTY, or --
+    for vehicle/helpers specifically -- INFERRED). A field the user
+    explicitly stated or confirmed themselves is left untouched -- otherwise
+    adding one more box after the user said "actually, send a pickup truck"
+    would silently discard their choice, which is exactly the "overwriting
+    correct information" failure mode this project is built to avoid. See
+    docs/architecture.md, "Corrections".
 
     This recomputes from scratch rather than first "invalidating" and then
     re-inferring as two steps -- fetching a fresh guess and overwriting *is*
     the invalidation, with no separate staleness bookkeeping required.
+
+    category uses the exact same EMPTY-or-INFERRED re-guess guard as
+    vehicle_type, even though it has no FieldSpec of its own (see specs.py's
+    OPTIONAL_SCALAR_PATHS) and never appears in the confirm-inferred
+    question flow, which is keyed off FIELD_SPECS membership, not field
+    status. Without this it would lock permanently after the first item:
+    a "documents"-only parcel booking that later adds a sofa would keep
+    reporting parcel_documents forever, since nothing would ever re-run the
+    guess once status moved off EMPTY.
     """
     guess = infer_vehicle_and_helpers(state.goods.items)
-    service = state.service
-    updates: dict[str, Field] = {}
+    service_updates: dict[str, Field] = {}
 
-    if service.vehicle_type.status in (FieldStatus.EMPTY, FieldStatus.INFERRED):
-        updates["vehicle_type"] = (
+    if state.service.vehicle_type.status in (FieldStatus.EMPTY, FieldStatus.INFERRED):
+        service_updates["vehicle_type"] = (
             Field[VehicleType](
                 value=guess.vehicle_type, status=FieldStatus.INFERRED, confidence=1.0, turn=turn
             )
             if guess
             else Field()
         )
-    if service.helpers_required.status in (FieldStatus.EMPTY, FieldStatus.INFERRED):
-        updates["helpers_required"] = (
+    if state.service.helpers_required.status in (FieldStatus.EMPTY, FieldStatus.INFERRED):
+        service_updates["helpers_required"] = (
             Field[int](
                 value=guess.helpers_required,
                 status=FieldStatus.INFERRED,
@@ -502,9 +512,22 @@ def _recompute_derived_fields(state: BookingState, turn: int) -> BookingState:
             else Field()
         )
 
-    if not updates:
+    goods_updates: dict[str, Field] = {}
+    if state.goods.category.status in (FieldStatus.EMPTY, FieldStatus.INFERRED):
+        category = infer_category(state.goods.items)
+        if category is not None:
+            goods_updates["category"] = Field[GoodsCategory](
+                value=category, status=FieldStatus.INFERRED, confidence=1.0, turn=turn
+            )
+
+    if not service_updates and not goods_updates:
         return state
-    return state.model_copy(update={"service": state.service.model_copy(update=updates)})
+    state_updates: dict[str, object] = {}
+    if service_updates:
+        state_updates["service"] = state.service.model_copy(update=service_updates)
+    if goods_updates:
+        state_updates["goods"] = state.goods.model_copy(update=goods_updates)
+    return state.model_copy(update=state_updates)
 
 
 # --------------------------------------------------------------------------

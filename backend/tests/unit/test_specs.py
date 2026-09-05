@@ -12,8 +12,17 @@ def test_every_priority_is_unique():
 
 
 def test_unconditional_required_fields_are_always_required():
-    for path in ("pickup.locality", "drop.locality", "goods.category", "schedule.date"):
+    for path in ("pickup.locality", "drop.locality", "goods.items", "schedule.date"):
         assert spec_for(path).is_required_now(BookingState()) is True
+
+
+def test_goods_category_has_no_spec_of_its_own():
+    """It is inferred from items (domain.inference.infer_category), never
+    asked about directly -- see _goods_need_floor_handling's docstring for
+    why a category the model can only fill by saying a category word out
+    loud would get permanently stuck."""
+    with pytest.raises(KeyError):
+        spec_for("goods.category")
 
 
 def test_time_window_defaults_to_required_but_is_asap_waives_it():
@@ -34,10 +43,13 @@ def test_time_window_defaults_to_required_but_is_asap_waives_it():
     assert spec_for("schedule.time_window").is_required_now(explicitly_not_asap) is True
 
 
-def test_items_required_unless_parcel():
-    """Keyed off goods.category, not booking_type -- see specs.py's
-    _needs_items docstring for why: nothing in this system ever sets
-    booking_type, so gating on it would make this permanently unreachable."""
+def test_items_are_required_regardless_of_category():
+    """Unconditional on purpose: even a parcel drop-off is just an item like
+    "documents", so there is no category state -- including one that does
+    not exist yet, since category is *inferred from* items -- that should
+    ever waive this. A conditional-on-category version of this requirement
+    was the original design and created a circular dependency (items needed
+    category; category needed items) that this sidesteps entirely."""
     state = BookingState()
     assert spec_for("goods.items").is_required_now(state) is True
 
@@ -52,7 +64,7 @@ def test_items_required_unless_parcel():
             )
         }
     )
-    assert spec_for("goods.items").is_required_now(parcel_state) is False
+    assert spec_for("goods.items").is_required_now(parcel_state) is True
 
 
 def test_packing_only_matters_for_a_mixed_household_load():

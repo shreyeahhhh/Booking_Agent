@@ -23,15 +23,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.domain.specs import FIELD_SPECS, AnswerType, FieldSpec, RequirementKind
-from app.domain.state import GoodsCategory
 
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "extractor.md"
 
-# Only scalar ENUM-typed fields need their allowed values spelled out here.
-# service.vehicle_type is also ENUM-typed but is excluded below (INFERRED
-# kind) and documented separately in the template.
-_ENUM_TYPES: dict[str, type] = {"goods.category": GoodsCategory}
-
+# No per-field enum-values lookup here (there was one, for goods.category,
+# until that field lost its FieldSpec entirely -- see docs/design.md SS3.4):
+# service.vehicle_type is the only other ENUM-typed spec, and it is INFERRED
+# kind, already excluded below and documented separately in the template. If
+# a future REQUIRED/CONDITIONAL enum field is ever added, generating its
+# allowed values here (rather than just "enum") is the thing to reinstate.
 _TYPE_LABELS: dict[AnswerType, str] = {
     AnswerType.TEXT: "text",
     AnswerType.DATE: 'raw phrase as the user said it (e.g. "tomorrow"), needs_normalization: true',
@@ -45,12 +45,7 @@ _TYPE_LABELS: dict[AnswerType, str] = {
 
 
 def _describe(spec: FieldSpec) -> str:
-    if spec.field_path in _ENUM_TYPES:
-        values = ", ".join(member.value for member in _ENUM_TYPES[spec.field_path])
-        type_label = f"one of: {values}"
-    else:
-        type_label = _TYPE_LABELS[spec.answer_type]
-    return f"- `{spec.field_path}` ({type_label}) -- {spec.label}"
+    return f"- `{spec.field_path}` ({_TYPE_LABELS[spec.answer_type]}) -- {spec.label}"
 
 
 def build_field_reference() -> str:

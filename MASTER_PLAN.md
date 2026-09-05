@@ -96,9 +96,9 @@ calls and no API key set.
 | 2.2 | Extractor prompt | `llm/prompts/extractor.md` | ✅ Prompt held as a file, not a string literal, so it can be diffed and reviewed. Field vocabulary generated from `FIELD_SPECS` (`llm/prompt_builder.py`), not hand-typed. Verified live: the real prompt turns 2.1's invented field names (`from_location`, `moving_date`) into genuine schema paths for the project's own canonical example. |
 | 2.3 | Groq extractor client | `llm/extractor.py` | ✅ Timeout, one retry (transient errors and the observed schema-violation 400), and a repair pass that feeds the parse/validation error back to the model. Async client (`AsyncGroq`), matching phase 3's FastAPI routes. Compact state serialisation (non-empty fields only). Verified live: a two-turn conversation with a real correction produced the exact right `op: correct` with `previous_value` set. |
 | 2.4 | Response templates | `conversation/templates.py` | ✅ `acknowledgment(what landed) + question(slot, state)` -- collapsed from the three-part design (a correction reads naturally as part of the acknowledgment itself). Deterministic variant rotation keyed on `state.turn`, no separate state needed. Verified by reading real generated output for a full conversation, not just unit assertions. |
-| 2.5 | Conversation state machine | `conversation/machine.py` | Phase transitions guarded by pure predicates. `can_enter_review` requires zero missing, ambiguous and conflicting. |
-| 2.6 | Deterministic summary renderer | `conversation/summary.py` | Final summary generated from state, **not** written by the model. Includes assumptions and correction history. |
-| 2.7 | Text REPL harness | `tests/repl.py` | Type a conversation in the terminal, watch state fill. |
+| 2.5 | Conversation state machine | `conversation/machine.py` | ✅ Phase transitions derived from `policy.sweep_and_select`'s own `SlotReason` rather than re-computed independently. No separate CORRECTING phase -- a correction is just another turn through the same general recomputation, which correctly reopens `GATHERING` for a scope-expanding correction and stays at `REVIEW` for a simple one. Verified end to end: the bounded-clarification give-up (built in phase 1, never wired to anything) fires for the first time in a real run. |
+| 2.6 | Deterministic summary renderer | `conversation/summary.py` | ✅ Final summary generated from state, **not** written by the model. Includes assumptions and correction history (only fields actually corrected, not a status report on every field). Structured `SummaryLine` list is the seam for a future spoken/condensed renderer (phase 3) to reuse rather than re-deriving from state a second time. |
+| 2.7 | Text REPL harness | `tests/repl.py` | ✅ Type a conversation in the terminal, watch state fill. First time everything from 2.1-2.6 ran together against the real API. Caught the most significant bug this project has found (see below), then a complete, correct 7-turn booking ran end to end: locations, items, floors, a mid-conversation topic change, confirming the inferred vehicle, and confirming the final summary. |
 
 **Acceptance:** a full booking completed by typing, with a correction mid-conversation and
 a correction at the summary stage, producing a correct final summary.
@@ -183,6 +183,109 @@ passing: an early version of the confirm-inferred test drove a while-loop off a 
 filler dict that omitted `pickup.locality`, so the policy correctly kept asking for it
 forever. Rewritten to fill every required field directly in two fixed passes — no loop,
 and a wrong dict now fails an assertion in under a second instead of hanging.
+
+**Step 2.5 closed a real wiring gap and caught two bugs in itself, both found by driving
+full conversations through the actual code rather than reasoning about it on paper:**
+- `domain.policy.record_question_asked` — the bounded-clarification counter increment —
+  had existed and been unit-tested in isolation since phase 1, but nothing anywhere ever
+  called it. The "give up after two attempts" mechanism could never have fired in an
+  actual conversation before this module wired it in. It now does, end to end, verified
+  by a test that runs an ambiguous field through two full clarification attempts and
+  confirms the third turn accepts it with a recorded assumption and moves on.
+- The first version of `advance()` only treated a clean "yes" as finalising when the
+  prior phase was `REVIEW`/`COMPLETE`. Confirming the CONFIRM_INFERRED vehicle guess
+  produced no patches either, so that branch never ran, `confirm_all()` was never called,
+  and the same confirm-inferred question would have been asked forever. Fixed by
+  including `CONFIRM_INFERRED` in the clean-confirm check.
+- That fix then surfaced a second, subtler bug: with `CONFIRM_INFERRED` added, a clean
+  confirm there also satisfied the "is_clean_confirm" condition used to decide COMPLETE
+  vs REVIEW -- which would have skipped the whole-booking review after confirming only
+  the vehicle guess. Confirming a vehicle suggestion is not the same act as confirming
+  the finished booking; only a clean confirm made *while already reviewing* may finalise
+  anything. Both are covered by dedicated tests now
+  (`test_confirming_inferred_vehicle_and_helpers_together_reaches_review`, which
+  intentionally does not just check "no longer stuck").
+
+Not built here, and deliberately not: `extraction.suggested_reply` (the phase 2.4
+escape hatch for off-topic/unclear turns) needs no new plumbing in this module. The
+caller of `advance()` already holds the `ExtractionResult` it passed in, so checking
+`suggested_reply` before deciding whether to call `templates.py` at all is a one-line
+check that belongs in step 2.7's REPL, not something `machine.py` needs to forward.
+
+**Step 2.6 was the first step this phase where the careful testing done on every prior
+step actually paid off in advance:** no logic bugs surfaced, only one small polish item
+(`format_vehicle`'s "a Tata Ace" reads fine in a sentence but wanted its article stripped
+for a label-value table line — fixed as `_without_article`, without touching
+`format_vehicle`'s existing contract, which `templates.py`'s prose still depends on as-is).
+
+One design correction this step forced, caught before it shipped rather than after:
+`docs/design.md` SS5.6's original example showed `Vehicle Tata Ace (suggested)`. Once
+SS2.5's phase machine was built, that annotation became something that can no longer
+happen: `REVIEW` is only reached once `CONFIRM_INFERRED` has resolved (or was never
+entered at all, for a no-items booking), so a summary can only ever show `vehicle_type` as
+absent or `CONFIRMED` -- never a still-unconfirmed suggestion. Doc corrected to match.
+
+Noted, not fixed: `Address.raw_text` is a fifth field of the exact shape `booking_type` /
+`schedule.is_asap` / `notes` were (step 2.2's findings) -- defined in the schema, confirmed
+by `confirm_all`, but nothing anywhere ever populates it, because locality has no separate
+raw-phrase-then-normalise pipeline the way dates and times do. Left out of the summary
+renderer entirely (referencing it would be dead code for a status that cannot occur) rather
+than fixed here, since removing or wiring up a Phase 1 schema field is a decision worth
+raising on its own, not folding into an unrelated step.
+
+**Step 2.7 found the most significant bug in this project so far, and it took the full
+pipeline running live to surface it.** Scripted conversation, real API, real turns:
+
+```
+User: I need to move a sofa from Koramangala to Whitefield tomorrow evening.
+Agent: Got it -- ... a sofa. What kind of things need to be moved?
+User: third floor, and yes there is a lift.
+Agent: Got it -- the 3rd floor, there's a lift. What type of items are these --
+       furniture, appliances, or general household stuff?
+User: ground floor.
+Agent: Got it, updated -- the ground floor. What are we moving -- furniture, ...?
+```
+
+Three turns running, the agent asked the same question while the user answered three
+*different* ones -- and one of those stray answers landed on the wrong field: "ground
+floor" (meant for the never-reached drop-floor question) instead overwrote pickup.floor,
+which the reducer correctly logged as a *correction* since nothing told it otherwise.
+
+Root cause: `goods.category` was a directly-asked `Required` field, but the extractor's
+own Rule 1 ("never infer a value the user did not state") correctly refuses to guess
+"furniture" from "sofa" -- categorising an item *is* the kind of inference that rule
+exists to forbid. Almost no one naturally says the word "furniture" out loud; they name
+the things they're moving. A field that can only be filled by the user saying a category
+word gets stuck forever, and everything gated on it (floor questions, packing) never
+engages -- exactly the "avoid asking for information already provided" / naturalness
+criteria the brief evaluates against, failing in the most visible way this project has
+produced.
+
+Fixed by extending the same pattern already proven for `vehicle_type`/`helpers_required`:
+`domain.inference.infer_category` classifies the goods category deterministically from the
+item list (a keyword lookup, explainable in one sentence, no model involved). This
+sidesteps Rule 1 entirely -- it is not the model inferring an unstated fact, it is code
+classifying a fact the user already gave explicitly (the item name). `goods.items` is now
+unconditionally required (SS3.3 in design.md), removing a circular dependency the original
+design had (items needed category to know if they were required; category needed items to
+be inferred from).
+
+One bug in the fix itself, caught by a test before it shipped: the first version set the
+auto-inferred category to `PROVIDED`, indistinguishable from a value the user stated
+themselves -- a "documents"-only booking that later added a sofa would have kept reporting
+`parcel_documents` forever, since nothing re-checks a field that already looks confirmed.
+Using `INFERRED` status instead (verified safe: `unconfirmed_inferred()` is keyed off
+`FIELD_SPECS` membership, and `goods.category` has none, so it can never leak into the
+confirm-inferred question flow the way giving it a spec entry would) keeps it re-inferrable
+exactly like the vehicle guess, while `_needs_items`'s old category-gating logic being
+removed meant nine existing tests needed updating to the corrected behaviour, not reverting
+-- each one had encoded the old, circular design as its expected outcome.
+
+After the fix, the identical scripted conversation ran to completion correctly: every
+question asked was the one actually pending, every answer landed on the right field, the
+inferred vehicle was confirmed, the whole-booking summary was confirmed, and the process
+exited cleanly at `COMPLETE` -- the first full realisation of MASTER_PLAN.md's phase 2
+acceptance criterion, live, not simulated.
 
 ---
 
