@@ -15,6 +15,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+filterwarnings = [
+    # starlette's TestClient triggers an anyio deprecation we do not control.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
 markers = [
     "llm: tests that call the Groq API live (deselect with '-m \"not llm\"')",
 ]

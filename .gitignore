@@ -19,6 +19,7 @@ node_modules/
 dist/
 .vite/
 *.local
+*.tsbuildinfo
 
 # ---- Generated / cached artifacts ----
 # Pre-synthesised TTS audio cache (regenerated on demand)
