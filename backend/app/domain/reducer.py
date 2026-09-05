@@ -26,7 +26,7 @@ from datetime import datetime
 
 from app.domain.inference import infer_vehicle_and_helpers
 from app.domain.normalizers import resolve_quantity_word, resolve_relative_date, resolve_time_of_day
-from app.domain.specs import get_field, with_field
+from app.domain.specs import field_class, get_field, with_field
 from app.domain.state import (
     AmbiguityReason,
     BookingState,
@@ -246,7 +246,13 @@ def _write_scalar(
         ]
 
     new_status = FieldStatus.AMBIGUOUS if ambiguity else FieldStatus.PROVIDED
-    new_field = Field(
+    # field_class(...), not bare Field(...): this is the one place an enum-,
+    # int- or bool-typed field's raw value (a plain str/int/bool as it
+    # arrives from a patch) gets validated and coerced into its declared
+    # type. See field_class's docstring in specs.py for why bare Field(...)
+    # cannot do this -- it silently stored "furniture" instead of
+    # GoodsCategory.FURNITURE until a live conversation test caught it.
+    new_field = field_class(field_path)(
         value=value,
         status=new_status,
         confidence=min(confidence, 0.5) if ambiguity else confidence,

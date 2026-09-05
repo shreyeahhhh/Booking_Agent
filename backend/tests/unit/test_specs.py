@@ -191,3 +191,29 @@ def test_all_scalar_paths_is_exactly_field_specs_plus_optional_paths():
 
     spec_paths = {spec.field_path for spec in FIELD_SPECS if spec.field_path != "goods.items"}
     assert set(ALL_SCALAR_PATHS) == spec_paths | set(OPTIONAL_SCALAR_PATHS)
+
+
+def test_field_class_resolves_every_scalar_path_and_coerces_correctly():
+    """Regression guard for the bug a live conversation test caught: a value
+    built via bare `Field(...)` is never validated against its declared type
+    (Pydantic has no bound type parameter to coerce against), so an enum
+    field silently stored a raw string instead of the real enum member.
+    field_class(path) must resolve to the *parameterised* class so
+    constructing through it actually coerces."""
+    from app.domain.specs import ALL_SCALAR_PATHS, field_class
+    from app.domain.state import FieldStatus, GoodsCategory
+
+    for path in ALL_SCALAR_PATHS:
+        cls = field_class(path)
+        assert issubclass(cls, Field)
+
+    category_field = field_class("goods.category")(value="furniture", status=FieldStatus.PROVIDED)
+    assert category_field.value is GoodsCategory.FURNITURE
+    assert isinstance(category_field.value, GoodsCategory)
+
+
+def test_field_class_rejects_a_path_that_is_not_a_scalar_field():
+    from app.domain.specs import field_class
+
+    with pytest.raises(TypeError):
+        field_class("goods.items")  # a list, not a Field[T]
