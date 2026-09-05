@@ -95,7 +95,7 @@ calls and no API key set.
 | 2.1 | Structured output contract | `llm/schema.py` | ✅ Pydantic → JSON Schema accepted by Groq with `strict: true` (all props required, `additionalProperties: false`, optionals as `anyOf[T, null]`). Verified with a live call, not just by inspection. |
 | 2.2 | Extractor prompt | `llm/prompts/extractor.md` | ✅ Prompt held as a file, not a string literal, so it can be diffed and reviewed. Field vocabulary generated from `FIELD_SPECS` (`llm/prompt_builder.py`), not hand-typed. Verified live: the real prompt turns 2.1's invented field names (`from_location`, `moving_date`) into genuine schema paths for the project's own canonical example. |
 | 2.3 | Groq extractor client | `llm/extractor.py` | ✅ Timeout, one retry (transient errors and the observed schema-violation 400), and a repair pass that feeds the parse/validation error back to the model. Async client (`AsyncGroq`), matching phase 3's FastAPI routes. Compact state serialisation (non-empty fields only). Verified live: a two-turn conversation with a real correction produced the exact right `op: correct` with `previous_value` set. |
-| 2.4 | Response templates | `conversation/templates.py` | `acknowledgment(diff) + [correction_note] + question(slot, state)`. 3-4 variants per slot, rotated. |
+| 2.4 | Response templates | `conversation/templates.py` | ✅ `acknowledgment(what landed) + question(slot, state)` -- collapsed from the three-part design (a correction reads naturally as part of the acknowledgment itself). Deterministic variant rotation keyed on `state.turn`, no separate state needed. Verified by reading real generated output for a full conversation, not just unit assertions. |
 | 2.5 | Conversation state machine | `conversation/machine.py` | Phase transitions guarded by pure predicates. `can_enter_review` requires zero missing, ambiguous and conflicting. |
 | 2.6 | Deterministic summary renderer | `conversation/summary.py` | Final summary generated from state, **not** written by the model. Includes assumptions and correction history. |
 | 2.7 | Text REPL harness | `tests/repl.py` | Type a conversation in the terminal, watch state fill. |
@@ -153,6 +153,36 @@ pass, the safe fallback, and — deliberately — a non-retriable error like a b
 propagating instead of being swallowed into a misleading "didn't catch that") is covered
 by 17 mocked tests in `test_extractor.py`, so this reliability logic runs on every commit
 at zero cost rather than only being exercised by the live tests.
+
+**Step 2.4 found the most significant bug so far, purely by reading generated output for a
+real conversation rather than trusting narrower unit tests:** the reducer built every new
+`Field` via the bare, unparameterised `Field(...)` class. Pydantic has no type parameter to
+validate or coerce against on the bare class, so an enum-typed value like `"furniture"` was
+stored as a plain `str`, never as `GoodsCategory.FURNITURE`. This had been silently
+harmless everywhere a `StrEnum`'s string-equality masked it — `specs.py`'s predicates,
+dict lookups by string key — for the whole of phases 1 and 2, until `templates.py`'s
+category-formatting code called `.value` expecting a real enum instance and crashed. Fixed
+with `specs.field_class(path)`, which derives the correct parameterised class from the
+Pydantic model annotations themselves (not a hand-maintained `{path: type}` table — one
+more of those was exactly how this class of bug kept recurring all day). Regression tests
+added in both `test_specs.py` and `test_reducer.py`.
+
+Two more findings, also only visible by reading real output:
+- `goods.category` was acknowledged redundantly alongside the actual item list ("...a sofa
+  and 2 cupboards, furniture") — suppressed when items are already present in the same turn.
+- `needs_disassembly`/`needs_packing` only had phrasing for a `True` answer; a `False`
+  answer produced no acknowledgment at all, silently dropping the user's "no" from the
+  response. Both directions now have phrasing.
+
+Also split `format_date` into a short form ("Saturday") for spoken acknowledgments and a
+full form ("Saturday, 12 September") reserved for the written summary (step 2.6) — the full
+form read over-formal said aloud mid-sentence.
+
+One test-only bug, caught by the test itself hanging for two minutes rather than silently
+passing: an early version of the confirm-inferred test drove a while-loop off a hand-typed
+filler dict that omitted `pickup.locality`, so the policy correctly kept asking for it
+forever. Rewritten to fill every required field directly in two fixed passes — no loop,
+and a wrong dict now fails an assertion in under a second instead of hanging.
 
 ---
 

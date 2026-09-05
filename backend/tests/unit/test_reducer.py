@@ -20,6 +20,22 @@ def test_set_on_empty_field_provides_it():
     assert f.status == FieldStatus.PROVIDED
 
 
+def test_an_enum_typed_field_is_stored_as_a_real_enum_member_not_a_raw_string():
+    """Regression: the reducer used to build the new Field via bare
+    Field(...), which has no bound type parameter for Pydantic to coerce
+    against, so "furniture" was stored as a plain str. Harmless everywhere a
+    StrEnum's string-equality masked it (specs.py's predicates, dict lookups
+    by string key), but wrong, and it broke the first templates.py code that
+    called .value expecting an actual enum instance. Caught by driving a
+    real conversation through templates.py, not by any narrower unit test."""
+    from app.domain.state import GoodsCategory
+
+    s = _apply(BookingState(), Patch(op=PatchOp.SET, field="goods.category", value="furniture"))
+    value = get_field(s, "goods.category").value
+    assert value is GoodsCategory.FURNITURE
+    assert isinstance(value, GoodsCategory)
+
+
 def test_turn_counter_increments_once_per_apply_call():
     s = BookingState()
     s = _apply(s, Patch(op=PatchOp.SET, field="pickup.locality", value="Koramangala"))

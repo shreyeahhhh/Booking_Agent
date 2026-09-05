@@ -270,6 +270,29 @@ def get_field(state: BookingState, path: str) -> Field:
     return obj
 
 
+def field_class(path: str) -> type[Field]:
+    """The concrete, parameterised Field[T] class a dotted path resolves to.
+
+    Derived from the model definitions themselves via introspection, not a
+    hand-maintained `{path: type}` table -- exactly the kind of second copy
+    of the schema that already drifted three times in this project
+    (booking_type, is_asap, an optional-fields test list). Whoever
+    constructs a new Field for `path` should build it through this class
+    (e.g. `field_class(path)(value=..., status=...)`), never through the
+    bare `Field(...)`: bare `Field` has no bound type parameter, so Pydantic
+    has nothing to validate or coerce the value against, and a raw string
+    like "furniture" is stored as-is instead of becoming GoodsCategory.FURNITURE.
+    `model_copy(update=...)`, used everywhere for immutable state updates,
+    does not re-validate on its own -- this is what makes that safe anyway.
+    """
+    model_cls: type = BookingState
+    for part in path.split("."):
+        model_cls = model_cls.model_fields[part].annotation
+    if not (isinstance(model_cls, type) and issubclass(model_cls, Field)):
+        raise TypeError(f"{path!r} does not resolve to a Field[T] annotation (got {model_cls!r})")
+    return model_cls
+
+
 def with_field(state: BookingState, path: str, new_field: Field) -> BookingState:
     """Return a new BookingState with the Field at `path` replaced.
 
