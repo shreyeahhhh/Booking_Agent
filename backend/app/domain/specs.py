@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.domain.state import BookingState, BookingType, Field, GoodsCategory
+from app.domain.state import BookingState, Field, GoodsCategory
 
 
 class RequirementKind(StrEnum):
@@ -74,8 +74,16 @@ class FieldSpec:
 
 
 def _needs_items(state: BookingState) -> bool:
-    """Every booking type except a parcel drop-off needs an item list."""
-    return state.booking_type.value != BookingType.PARCEL
+    """Every category except a parcel/document drop-off needs an item list.
+
+    Keyed off `goods.category` rather than `booking_type`: category is a
+    required field the extractor reliably populates, whereas nothing in this
+    system ever sets `booking_type` on its own (see the note on it in
+    docs/design.md SS3.2 -- it is an optional field the extractor may fill in
+    if the user states it, used for summary framing, not for gating any
+    requirement).
+    """
+    return state.goods.category.value != GoodsCategory.PARCEL_DOCUMENTS
 
 
 def _pickup_floor_matters(state: BookingState) -> bool:
@@ -112,8 +120,28 @@ def _needs_disassembly_check(state: BookingState) -> bool:
     return any(any(word in item.name.lower() for word in bulky) for item in state.goods.items)
 
 
+def _time_window_matters(state: BookingState) -> bool:
+    """A time-of-day window is not worth asking for once the user has said "ASAP".
+
+    `not None` is `True`, so an unset is_asap (the default) correctly leaves
+    time_window required; only an explicit `is_asap=True` waives it. Found
+    the same way as the booking_type bug above: docs/design.md SS3.3 already
+    documented "satisfied by is_asap" as the intended rule, but nothing had
+    actually implemented it -- time_window was unconditionally required, so
+    a user saying "as soon as possible" would still be asked what time of
+    day they meant.
+    """
+    return not state.schedule.is_asap.value
+
+
 def _needs_packing_check(state: BookingState) -> bool:
-    return state.booking_type.value == BookingType.HOUSE_SHIFTING
+    """Packing help is worth asking about for a mixed household load.
+
+    Keyed off `goods.category` for the same reason as `_needs_items` above --
+    "household_mixed" is a reasonable, already-reliable proxy for "this is a
+    house-shifting-scale job" without depending on the never-set `booking_type`.
+    """
+    return state.goods.category.value == GoodsCategory.HOUSEHOLD_MIXED
 
 
 FIELD_SPECS: tuple[FieldSpec, ...] = (
@@ -131,9 +159,10 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec(
         "schedule.time_window",
         55,
-        RequirementKind.REQUIRED,
+        RequirementKind.CONDITIONAL,
         "time of day",
         AnswerType.TIME_WINDOW,
+        required_when=_time_window_matters,
     ),
     FieldSpec(
         "pickup.floor",
