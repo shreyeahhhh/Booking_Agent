@@ -230,7 +230,7 @@ Primary: **`openai/gpt-oss-120b`** on Groq.
 
 | Model | Verdict |
 |---|---|
-| **`openai/gpt-oss-120b`** | **Chosen.** Production tier. Strict structured outputs (constrained decoding) guarantee schema-valid extraction. ~500 tok/s. $0.15 / $0.60 per 1M tokens. Strong instruction following, which matters for the "never invent a value" rules. |
+| **`openai/gpt-oss-120b`** | **Chosen.** Production tier. Strict structured outputs (server-side schema validation) mean a malformed generation fails loudly with an error rather than reaching the client as broken JSON — see docs/design.md §4.2 for what this does and does not guarantee in practice. ~500 tok/s. $0.15 / $0.60 per 1M tokens. Strong instruction following, which matters for the "never invent a value" rules. |
 | `openai/gpt-oss-20b` | Benchmark candidate. ~1000 tok/s, half the price, also strict-capable. Likely weaker on correction detection and ambiguity judgement — to be measured on the extraction eval set, not assumed. |
 | `llama-3.3-70b-versatile` | Rejected. No strict mode (best-effort JSON only) and slower at 280 tok/s. |
 | `llama-3.1-8b-instant` | Rejected for extraction. Too weak for correction and ambiguity nuance. |
