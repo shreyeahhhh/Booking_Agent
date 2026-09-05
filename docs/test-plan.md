@@ -38,7 +38,7 @@ Plus a **manual voice checklist** for what automation cannot catch.
 | "day after tomorrow" | Fri 11 Sep | Sun 13 Sep |
 | "tonight" | Fri 11 Sep 22:00 | Fri 11 Sep, `night` |
 | "morning" | any | `TimeWindow.MORNING` |
-| "half past four" | any | 16:30, `afternoon` |
+| "half past four" | any | 16:30, `evening` (the 16-20 band in design.md §3.2 starts at 16:00) |
 | "the 30th" | Feb | Reject — invalid date, ask again |
 
 ---
