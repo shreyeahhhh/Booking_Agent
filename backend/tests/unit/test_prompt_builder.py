@@ -4,7 +4,13 @@ import re
 
 import pytest
 
-from app.domain.specs import FIELD_SPECS, RequirementKind, get_field, spec_for
+from app.domain.specs import (
+    FIELD_SPECS,
+    OPTIONAL_SCALAR_PATHS,
+    RequirementKind,
+    get_field,
+    spec_for,
+)
 from app.domain.state import BookingState
 from app.llm.prompt_builder import build_field_reference, load_extractor_system_prompt
 
@@ -16,7 +22,11 @@ from app.llm.prompt_builder import build_field_reference, load_extractor_system_
 # Split by whether a FieldSpec exists at all: vehicle_type/helpers_required
 # have one (INFERRED-kind, just excluded from the generated block for its
 # "do not guess this" caveat); the rest genuinely have none.
-_SPEC_LESS_FIELDS = ("schedule.is_asap", "booking_type", "pickup.landmark", "drop.landmark")
+# OPTIONAL_SCALAR_PATHS is specs.py's own canonical list, not re-typed here --
+# a second hand-typed copy is exactly the kind of drift this project already
+# hit once (booking_type, is_asap). It previously omitted schedule.exact_time
+# by the same kind of oversight; importing it directly makes that impossible.
+_SPEC_LESS_FIELDS = OPTIONAL_SCALAR_PATHS
 _INFERRED_SPEC_FIELDS = ("service.vehicle_type", "service.helpers_required")
 _HAND_DOCUMENTED_FIELDS = ("goods.items", "notes") + _SPEC_LESS_FIELDS + _INFERRED_SPEC_FIELDS
 

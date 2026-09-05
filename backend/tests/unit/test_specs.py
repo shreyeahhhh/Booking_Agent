@@ -175,3 +175,19 @@ def test_with_field_is_immutable_and_precise():
 def test_with_field_rejects_paths_deeper_than_the_schema():
     with pytest.raises(ValueError):
         with_field(BookingState(), "pickup.locality.extra", Field())
+
+
+def test_all_scalar_paths_has_no_duplicates_and_every_path_resolves():
+    from app.domain.specs import ALL_SCALAR_PATHS
+
+    assert len(ALL_SCALAR_PATHS) == len(set(ALL_SCALAR_PATHS))
+    state = BookingState()
+    for path in ALL_SCALAR_PATHS:
+        get_field(state, path)  # raises if any path is not a real Field
+
+
+def test_all_scalar_paths_is_exactly_field_specs_plus_optional_paths():
+    from app.domain.specs import ALL_SCALAR_PATHS, OPTIONAL_SCALAR_PATHS
+
+    spec_paths = {spec.field_path for spec in FIELD_SPECS if spec.field_path != "goods.items"}
+    assert set(ALL_SCALAR_PATHS) == spec_paths | set(OPTIONAL_SCALAR_PATHS)

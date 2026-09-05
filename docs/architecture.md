@@ -208,9 +208,9 @@ Supporting guards:
 | VAD endpointing | 600-900ms | Largest controllable slice |
 | Upload | 100-200ms | |
 | STT (whisper-turbo) | 200-400ms | |
-| LLM (~200 tok @ ~500 tok/s) | 300-500ms | **Zero on fast-path turns** |
+| LLM (~370 tok completion @ ~500 tok/s) | ~700-800ms | **Zero on fast-path turns.** Recalculated from a real measurement (step 2.3): a realistic multi-fact turn used 371 completion tokens, not the ~200 originally guessed before the extractor existed. |
 | TTS first byte | 300-600ms | **Near-zero on cache hit** |
-| **Total** | **~1.5-2.5s**, often under 1s | |
+| **Total** | **~2-2.9s**, often under 1s on fast-path turns | Revised from the original ~1.5-2.5s estimate to reflect the LLM row above. Still not an end-to-end measurement -- that needs the full STT+LLM+TTS loop, which only exists once phase 3 is built. |
 
 Mitigations, in order of value:
 

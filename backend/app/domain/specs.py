@@ -226,6 +226,26 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
 
 _SPECS_BY_PATH: dict[str, FieldSpec] = {spec.field_path: spec for spec in FIELD_SPECS}
 
+# Scalar Field[T] paths with no FieldSpec entry -- optional, never asked about
+# directly, but still real and still settable by the extractor. Kept as one
+# named list so anything needing "every real scalar path" (state
+# serialisation for the extractor prompt; the prompt's own drift-guard
+# tests) has a single canonical source instead of a second hand-typed copy
+# that could itself drift out of sync -- the exact failure mode that let
+# booking_type and is_asap go unused for a whole phase.
+OPTIONAL_SCALAR_PATHS: tuple[str, ...] = (
+    "booking_type",
+    "schedule.is_asap",
+    "schedule.exact_time",
+    "pickup.landmark",
+    "drop.landmark",
+)
+
+ALL_SCALAR_PATHS: tuple[str, ...] = (
+    tuple(spec.field_path for spec in FIELD_SPECS if spec.field_path != "goods.items")
+    + OPTIONAL_SCALAR_PATHS
+)
+
 
 def spec_for(field_path: str) -> FieldSpec:
     try:
