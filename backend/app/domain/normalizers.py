@@ -101,8 +101,10 @@ def resolve_relative_date(phrase: str, reference: datetime) -> date | None:
 
 # Bands tile the day exactly (06/12/16/20/24), matching TimeWindow's docstring
 # in domain/state.py. Kept here, next to the parsing logic that produces exact
-# times, so the two stay consistent by construction.
-_WINDOW_START_HOUR = {
+# times, so the two stay consistent by construction. Public (not _-prefixed):
+# conversation/summary.py reuses it to display an hour range ("evening
+# (4-8pm)") rather than hand-typing the same four boundaries a second time.
+WINDOW_START_HOUR = {
     TimeWindow.MORNING: 6,
     TimeWindow.AFTERNOON: 12,
     TimeWindow.EVENING: 16,
@@ -141,13 +143,13 @@ _HALF_QUARTER = re.compile(
 
 def window_for_hour(hour: int) -> TimeWindow:
     """Which TimeWindow band a 24-hour clock hour falls into."""
-    if hour < _WINDOW_START_HOUR[TimeWindow.MORNING]:
+    if hour < WINDOW_START_HOUR[TimeWindow.MORNING]:
         return TimeWindow.NIGHT  # e.g. 01:00 is still "tonight"'s tail end
-    if hour < _WINDOW_START_HOUR[TimeWindow.AFTERNOON]:
+    if hour < WINDOW_START_HOUR[TimeWindow.AFTERNOON]:
         return TimeWindow.MORNING
-    if hour < _WINDOW_START_HOUR[TimeWindow.EVENING]:
+    if hour < WINDOW_START_HOUR[TimeWindow.EVENING]:
         return TimeWindow.AFTERNOON
-    if hour < _WINDOW_START_HOUR[TimeWindow.NIGHT]:
+    if hour < WINDOW_START_HOUR[TimeWindow.NIGHT]:
         return TimeWindow.EVENING
     return TimeWindow.NIGHT
 
