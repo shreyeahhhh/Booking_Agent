@@ -51,6 +51,8 @@ play audio + render live state panel
 
 | Component | Module | Deterministic? | Responsibility |
 |---|---|---|---|
+| Booking state | `domain/state.py` | Yes | `BookingState` and `Field[T]` -- the typed schema every other component reads and writes |
+| Field specification | `domain/specs.py` | Yes | Declarative `FieldSpec` table: priority, conditional-requirement predicates, answer types |
 | Extractor | `llm/extractor.py` | No | Utterance -> `ExtractionResult` (patches with evidence + confidence) |
 | Reducer | `domain/reducer.py` | Yes | Validate, normalise and apply patches; append to event log |
 | Normalisers | `domain/normalizers.py` | Yes | Relative dates, time windows, quantities. **Never the LLM.** |
@@ -243,6 +245,7 @@ deliberation, and reasoning tokens are billed as output.
 | Not used | Why |
 |---|---|
 | Database | A booking conversation is one short-lived session with no cross-session reads. In-memory dict behind a swappable interface. |
+| Serverless / function hosting (e.g. Vercel, Netlify Functions) | The brief names these as example platforms, but the in-memory session store above needs one warm process to persist across a conversation's turns, which a function platform gives no guarantee of. Phase 4 targets a persistent-process host instead (Render/Railway/Fly.io-class). |
 | LangChain / agent frameworks | The abstraction would hide exactly the logic being assessed. |
 | RAG / vector store | Nothing to retrieve. |
 | Realtime speech-to-speech APIs | They put the model in charge of state, which contradicts the entire design. |
