@@ -98,7 +98,7 @@ class Field[T]:
 
 ```
 BookingState
-├── booking_type : BookingType                    [INFERRED]
+├── booking_type : BookingType                    [OPTIONAL, see note below]
 ├── pickup       : Address
 ├── drop         : Address
 ├── schedule     : Schedule
@@ -141,18 +141,18 @@ The core design judgement. Each field is one of four kinds:
 | 10 | `pickup.locality` | Required | |
 | 20 | `drop.locality` | Required | |
 | 30 | `goods.category` | Required | Usually inferred from the opening utterance |
-| 40 | `goods.items` | Conditional | Required unless `booking_type == parcel` |
+| 40 | `goods.items` | Conditional | Required unless `goods.category == parcel_documents` |
 | 50 | `schedule.date` | Required | |
-| 55 | `schedule.time_window` | Required | Satisfied by `is_asap` |
+| 55 | `schedule.time_window` | Conditional | Required unless `schedule.is_asap == true` |
 | 60 | `pickup.floor` | Conditional | Only if goods are furniture / appliances / household |
 | 65 | `pickup.has_lift` | Conditional | **Only if `floor >= 2`** |
 | 70 | `drop.floor` | Conditional | As above |
 | 75 | `drop.has_lift` | Conditional | **Only if `floor >= 2`** |
 | 80 | `service.needs_disassembly` | Conditional | Only if items include bulky furniture (bed, wardrobe) |
-| 85 | `service.needs_packing` | Conditional | Only if `booking_type == house_shifting` |
+| 85 | `service.needs_packing` | Conditional | Only if `goods.category == household_mixed` |
 | 90 | `service.vehicle_type` | Inferred | Proposed from items, then confirmed |
 | 95 | `service.helpers_required` | Inferred | Proposed from item weight and floors |
-| — | `*.landmark`, `schedule.exact_time`, `notes` | Optional | Never asked |
+| — | `*.landmark`, `schedule.exact_time`, `notes`, `booking_type` | Optional | Never asked; see note below |
 
 ### 3.4 Rationale for the notable choices
 
@@ -177,6 +177,17 @@ visible, rather than silently overwritten by a confident-looking normalisation.
 agent records what it assumed and surfaces it in the final summary. An agent that says
 what it guessed is more trustworthy than one that guesses silently.
 
+**`booking_type` gates nothing and is never asked about.** It was originally tagged
+`[INFERRED]`, on the same footing as `vehicle_type` — but unlike a vehicle guess, nothing
+in this system ever actually derives it, which surfaced as a real bug while writing the
+extractor prompt (step 2.2): the two predicates that read it (`goods.items`,
+`service.needs_packing`) could never see it change, so they were permanently stuck at
+their default answer. Fixed by rekeying both off `goods.category` instead, which is a
+required field the extractor reliably populates. `booking_type` itself is kept as a plain
+optional field the extractor may fill in when the user states the scale of the job
+directly ("I'm moving my whole flat") — used only to make the final summary read more
+naturally, with no gating role.
+
 ### 3.5 Deliberately excluded
 
 | Excluded | Why |
@@ -199,7 +210,15 @@ hold state, choose questions, decide completion, resolve dates, or write user-fa
 ### 4.2 Structured output
 
 Pydantic model → JSON Schema → Groq `response_format: {type: "json_schema", strict: true}`.
-`strict` mode uses constrained decoding, so the output is **guaranteed** schema-valid.
+
+`strict` mode validates the model's generation against the schema server-side. Verified
+live during implementation: this is **not** an absolute guarantee that the model always
+emits schema-valid output — on rare occasions `gpt-oss-120b` generated a value that
+violated its own schema (e.g. wrapping an enum in an object) even at temperature 0. What
+strict mode actually guarantees is narrower and still valuable: **either you get schema-valid
+JSON, or the call fails with an explicit error** — never silently malformed JSON reaching
+the client. `llm/extractor.py`'s retry (step 2.3) exists because of this exact behaviour,
+observed directly rather than assumed from the marketing description of the feature.
 
 ```jsonc
 {
@@ -228,45 +247,31 @@ on it.
 
 ### 4.3 System prompt
 
-Held as a file (`llm/prompts/extractor.md`), not a string literal, so it can be diffed and
-reviewed like code. Kept short — every token is billed on every call, and short prompts are
-followed more reliably.
+The actual text lives in [`llm/prompts/extractor.md`](../backend/app/llm/prompts/extractor.md),
+not duplicated here — a copy in this document would drift the moment the prompt is tuned
+(exactly the kind of drift that let `booking_type` and `is_asap` sit unused for a whole phase
+undetected; see §3.4). Structure:
 
-```
-You are the language-understanding component of a logistics booking assistant.
-You do NOT talk to the user. You do NOT ask questions. You do NOT write replies.
-Your only job is to read the user's latest utterance and output structured field updates.
+- **Role and boundaries.** The model understands language; it does not talk to the user,
+  choose questions, or decide completion.
+- **Field vocabulary**, generated from `FIELD_SPECS` by `llm/prompt_builder.py`, not
+  hand-typed — the schema stays the single source of truth for what the model is told exists.
+  `tests/unit/test_prompt_builder.py` checks every path in it still resolves on `BookingState`.
+- **Special fields** (`goods.items`, `notes`, `booking_type`, `is_asap`, `vehicle_type` /
+  `helpers_required`) documented by hand, because each needs prose a generic per-field
+  generator would have to special-case anyway — list operations, an explicit "optional,
+  only if stated directly" caveat, or a "never guess this" caveat.
+- **Rules**, including the two load-bearing ones: never emit a patch for something the user
+  did not just say (the guard against inventing detail), and never resolve a date or time —
+  emit the raw phrase and let `dateutil` do it.
+- **One worked example**, covering both multi-fact extraction and a correction — the two
+  behaviours most likely to go wrong without a concrete demonstration.
 
-INPUT
-  CURRENT_STATE  - booking fields already known (non-empty fields only)
-  LAST_QUESTION  - what the assistant just asked, or null
-  RECENT_TURNS   - the last 4 exchanges
-
-RULES
-1. Extract only what the user actually said. Never infer, guess, or fill plausible values.
-2. `evidence` must be a verbatim substring of the utterance. If you cannot quote it,
-   do not emit the patch.
-3. Do NOT resolve dates or times. Emit the raw phrase ("tomorrow", "this Saturday")
-   and set needs_normalization: true. The backend resolves them.
-4. If the user changes a value already in CURRENT_STATE, use op "correct" and set
-   previous_value to the value being replaced.
-5. If a value is too vague to act on, still emit the patch, set `ambiguity` to the
-   reason, and set confidence <= 0.5.
-6. One utterance may contain several facts. Emit one patch per fact.
-7. Anything you cannot map to a field goes in unresolved_mentions.
-8. Never emit a patch for a field the user did not mention in THIS utterance,
-   even if that field is missing from CURRENT_STATE.
-
-CONFIDENCE
-  1.0        explicit and unambiguous
-  0.7 - 0.9  clear but indirect
-  0.4 - 0.6  vague, or inferred from phrasing
-  below 0.4  do not emit the patch
-```
-
-**Rule 8 is the most important line in the file.** Without it a helpful model will "assist"
-by filling gaps it was never told about — precisely the hallucinated-detail failure mode.
-**Rule 3 is second**: never let a language model do calendar arithmetic.
+Verified live, not just read for plausibility: `tests/unit/test_llm_extractor_live.py` used a
+deliberately minimal throwaway prompt and got back invented field names (`from_location`,
+`moving_date`) for the project's own canonical example. `tests/unit/test_extractor_prompt_live.py`
+reruns that exact sentence through the real prompt and confirms it now produces genuine
+schema paths (`pickup.locality`, `drop.locality`, …) with correct `needs_normalization` flags.
 
 ### 4.4 The one exception: `suggested_reply`
 
@@ -394,7 +399,9 @@ The specific ways LLM agents break, and where each is addressed:
 | Calendar arithmetic errors | The model never resolves dates; `dateutil` does | `domain/normalizers.py` |
 | Infinite clarification loops | Two attempts per field, then a recorded assumption | `domain/policy.py` |
 
-**Note on constrained decoding:** `strict: true` guarantees the *shape*, never the
-*semantics*. A schema-valid patch can still set `pickup` to a drop-off address or a date in
-the past. The reducer validates contents regardless — the guarantee removes one failure
+**Note on constrained decoding:** `strict: true` narrows failures to the shape of the
+*response*, never the *semantics* of its contents — and even the shape guarantee is really
+"schema-valid or an explicit error," not "the model can never attempt something invalid"
+(see §4.2). A schema-valid patch can still set `pickup` to a drop-off address or a date in
+the past. The reducer validates contents regardless — strict mode removes one failure
 class, not the need for validation.

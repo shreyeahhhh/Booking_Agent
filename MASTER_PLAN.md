@@ -92,8 +92,8 @@ calls and no API key set.
 
 | # | Step | Files | Acceptance |
 |---|---|---|---|
-| 2.1 | Structured output contract | `llm/schema.py` | Pydantic → JSON Schema accepted by Groq with `strict: true` (all props required, `additionalProperties: false`, optionals as `anyOf[T, null]`). |
-| 2.2 | Extractor prompt | `llm/prompts/extractor.md` | Prompt held as a file, not a string literal, so it can be diffed and reviewed. |
+| 2.1 | Structured output contract | `llm/schema.py` | ✅ Pydantic → JSON Schema accepted by Groq with `strict: true` (all props required, `additionalProperties: false`, optionals as `anyOf[T, null]`). Verified with a live call, not just by inspection. |
+| 2.2 | Extractor prompt | `llm/prompts/extractor.md` | ✅ Prompt held as a file, not a string literal, so it can be diffed and reviewed. Field vocabulary generated from `FIELD_SPECS` (`llm/prompt_builder.py`), not hand-typed. Verified live: the real prompt turns 2.1's invented field names (`from_location`, `moving_date`) into genuine schema paths for the project's own canonical example. |
 | 2.3 | Groq extractor client | `llm/extractor.py` | Timeout, one retry, and a repair pass that feeds validation errors back. Compact state serialisation (non-empty fields only) to keep prompts ~900 tokens. |
 | 2.4 | Response templates | `conversation/templates.py` | `acknowledgment(diff) + [correction_note] + question(slot, state)`. 3-4 variants per slot, rotated. |
 | 2.5 | Conversation state machine | `conversation/machine.py` | Phase transitions guarded by pure predicates. `can_enter_review` requires zero missing, ambiguous and conflicting. |
@@ -102,6 +102,40 @@ calls and no API key set.
 
 **Acceptance:** a full booking completed by typing, with a correction mid-conversation and
 a correction at the summary stage, producing a correct final summary.
+
+**Step 2.1 found two things only a real call could surface, not schema inspection:**
+- Groq's strict-mode validator rejected an `anyOf` branch that was a bare `$ref` next to
+  `null` as "not disambiguated," even though the referenced type (an enum) is trivially
+  distinguishable from `null` once resolved. The check appears to run before `$ref` is
+  dereferenced. Fixed by inlining every `$ref` before sending the schema.
+- Strict mode is not an absolute guarantee against a malformed generation: `gpt-oss-120b`
+  occasionally violated its own schema (wrapping an enum value in an object) even at
+  temperature 0. Groq validates server-side and returns a 400 rather than passing broken
+  JSON through, which is the right failure mode — but `docs/architecture.md` and
+  `docs/design.md` originally overstated this as an unconditional guarantee, sourced from
+  Groq's own docs rather than verified against real behaviour. Corrected in both files.
+
+**Step 2.2 found three gaps of the same shape — a schema field with no mechanism that ever
+populates it — surfaced by writing out the extractor's field vocabulary and asking "does
+anything actually set this?" for each one:**
+- `booking_type` existed and got confirmed by `confirm_all`, and two predicates in
+  `specs.py` (`_needs_items`, `_needs_packing_check`) read it — but nothing anywhere ever
+  set it, so those predicates were permanently stuck at their default answer. Rekeyed both
+  off `goods.category` instead, which is a required field the extractor reliably populates.
+  `booking_type` itself is kept as a plain optional field for summary framing only.
+- `schedule.is_asap` existed and got confirmed by `confirm_all`, but `schedule.time_window`
+  was unconditionally required regardless of it — design.md already documented "satisfied by
+  is_asap" as the intended rule, but nothing implemented it. A user saying "as soon as
+  possible" would still have been asked what time of day they meant. Fixed by making
+  `time_window` conditional on `not is_asap`.
+- `notes` (the "any additional requirements" field — one of the PDF's own six summary
+  categories) had no reducer support at all; any patch targeting it was silently dropped as
+  an unresolvable field path. Fixed with a small dedicated append/clear handler, the same
+  shape as the items-list handler but without item's name-matching complexity.
+
+All three were confirmed with a failing repro before the fix and a regression test after,
+the same discipline as every other bug this project has caught. `docs/design.md` and
+`docs/test-plan.md` updated to match.
 
 ---
 
