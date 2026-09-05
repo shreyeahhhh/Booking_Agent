@@ -15,6 +15,12 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q -m \"not llm\""
+# "auto": any `async def test_*` runs as an asyncio test with no per-test
+# marker needed. Chosen over strict mode because test files increasingly mix
+# sync and async tests (e.g. test_extractor.py), and strict mode requires
+# every async test to carry its own @pytest.mark.asyncio -- one more thing
+# to forget as phase 3 adds more async code (FastAPI routes).
+asyncio_mode = "auto"
 filterwarnings = [
     # starlette's TestClient triggers an anyio deprecation we do not control.
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",

@@ -94,7 +94,7 @@ calls and no API key set.
 |---|---|---|---|
 | 2.1 | Structured output contract | `llm/schema.py` | ✅ Pydantic → JSON Schema accepted by Groq with `strict: true` (all props required, `additionalProperties: false`, optionals as `anyOf[T, null]`). Verified with a live call, not just by inspection. |
 | 2.2 | Extractor prompt | `llm/prompts/extractor.md` | ✅ Prompt held as a file, not a string literal, so it can be diffed and reviewed. Field vocabulary generated from `FIELD_SPECS` (`llm/prompt_builder.py`), not hand-typed. Verified live: the real prompt turns 2.1's invented field names (`from_location`, `moving_date`) into genuine schema paths for the project's own canonical example. |
-| 2.3 | Groq extractor client | `llm/extractor.py` | Timeout, one retry, and a repair pass that feeds validation errors back. Compact state serialisation (non-empty fields only) to keep prompts ~900 tokens. |
+| 2.3 | Groq extractor client | `llm/extractor.py` | ✅ Timeout, one retry (transient errors and the observed schema-violation 400), and a repair pass that feeds the parse/validation error back to the model. Async client (`AsyncGroq`), matching phase 3's FastAPI routes. Compact state serialisation (non-empty fields only). Verified live: a two-turn conversation with a real correction produced the exact right `op: correct` with `previous_value` set. |
 | 2.4 | Response templates | `conversation/templates.py` | `acknowledgment(diff) + [correction_note] + question(slot, state)`. 3-4 variants per slot, rotated. |
 | 2.5 | Conversation state machine | `conversation/machine.py` | Phase transitions guarded by pure predicates. `can_enter_review` requires zero missing, ambiguous and conflicting. |
 | 2.6 | Deterministic summary renderer | `conversation/summary.py` | Final summary generated from state, **not** written by the model. Includes assumptions and correction history. |
@@ -136,6 +136,23 @@ anything actually set this?" for each one:**
 All three were confirmed with a failing repro before the fix and a regression test after,
 the same discipline as every other bug this project has caught. `docs/design.md` and
 `docs/test-plan.md` updated to match.
+
+**Step 2.3 corrected a stale estimate with a real measurement.** `architecture.md`'s
+original "~900 tokens" figure was a guess made before the extractor existed. A live call
+measured **2654 prompt tokens / 371 completion tokens** for a realistic mid-conversation
+turn — nearly 3x the guess, because the field vocabulary and worked example that made
+step 2.2's prompt actually work (see its note above) are real content with a real token
+cost. The latency budget table in `architecture.md` is recalculated from the corrected
+completion-token count (~200 → ~370), which moves the LLM row from ~300-500ms to
+~700-800ms and the total from ~1.5-2.5s to ~2-2.9s. Still not an end-to-end measurement —
+that needs the full STT+LLM+TTS loop, which only exists once phase 3 is built.
+
+The client's own logic (state serialisation, message building, parsing, and retry/repair/
+fallback — transient errors, the observed schema-violation 400, a malformed-JSON repair
+pass, the safe fallback, and — deliberately — a non-retriable error like a bad API key
+propagating instead of being swallowed into a misleading "didn't catch that") is covered
+by 17 mocked tests in `test_extractor.py`, so this reliability logic runs on every commit
+at zero cost rather than only being exercised by the live tests.
 
 ---
 
