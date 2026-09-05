@@ -73,10 +73,26 @@ def _format_exact_time(hhmm: str) -> str:
     return label[1:] if label.startswith("0") else label
 
 
+def _mentions_locality(raw_text: str, locality: str) -> bool:
+    """True if the interpreted value is recognisable within what was actually
+    quoted -- i.e. there is nothing worth flagging. Evidence naturally wraps
+    the locality in surrounding words ("from Koramangala" for a value of
+    "Koramangala"), which is not a mis-transcription and must not be flagged
+    as one on every single booking -- only a real divergence should surface.
+    """
+    return locality.strip().lower() in raw_text.strip().lower()
+
+
 def _render_address(address: Address) -> str | None:
     parts: list[str] = []
     if address.locality.status != FieldStatus.EMPTY:
-        parts.append(str(address.locality.value))
+        locality_text = str(address.locality.value)
+        raw_text = address.raw_text
+        if raw_text.status != FieldStatus.EMPTY and not _mentions_locality(
+            str(raw_text.value), locality_text
+        ):
+            locality_text = f'{locality_text} (heard as "{raw_text.value}")'
+        parts.append(locality_text)
     if not parts:
         return None
     if address.floor.status != FieldStatus.EMPTY:
