@@ -189,6 +189,69 @@ def test_correcting_a_bare_city_into_a_locality_clears_the_ambiguity():
     assert get_field(s2, "drop.locality").value == "Kakkanad"
 
 
+# --- raw_text: a locality patch's verbatim evidence, alongside the value ---
+# Regression coverage for MASTER_PLAN.md's step 2.6 "Noted, not fixed" item:
+# Address.raw_text was defined in the schema and confirmed by confirm_all,
+# but nothing ever populated it -- the same orphaned-field shape step 2.2
+# found for booking_type/is_asap/notes.
+
+
+def test_a_locality_patch_populates_the_sibling_raw_text_from_evidence():
+    s = _apply(
+        BookingState(),
+        Patch(
+            op=PatchOp.SET,
+            field="pickup.locality",
+            value="Koramangala",
+            evidence="from Koramangala",
+        ),
+    )
+    raw = get_field(s, "pickup.raw_text")
+    assert raw.value == "from Koramangala"
+    assert raw.status == FieldStatus.PROVIDED
+
+
+def test_drop_locality_populates_drop_raw_text_not_pickup():
+    s = _apply(
+        BookingState(),
+        Patch(op=PatchOp.SET, field="drop.locality", value="Whitefield", evidence="to Whitefield"),
+    )
+    assert get_field(s, "drop.raw_text").value == "to Whitefield"
+    assert get_field(s, "pickup.raw_text").status == FieldStatus.EMPTY
+
+
+def test_a_locality_patch_with_no_evidence_leaves_raw_text_empty():
+    s = _apply(BookingState(), Patch(op=PatchOp.SET, field="pickup.locality", value="Koramangala"))
+    assert get_field(s, "pickup.raw_text").status == FieldStatus.EMPTY
+
+
+def test_correcting_locality_updates_raw_text_to_the_new_evidence():
+    s = _apply(
+        BookingState(),
+        Patch(op=PatchOp.SET, field="pickup.locality", value="Kochi", evidence="Kochi"),
+    )
+    s2 = _apply(
+        s,
+        Patch(
+            op=PatchOp.CORRECT,
+            field="pickup.locality",
+            value="Kakkanad",
+            previous_value="Kochi",
+            evidence="no, Kakkanad",
+        ),
+    )
+    assert get_field(s2, "pickup.raw_text").value == "no, Kakkanad"
+
+
+def test_raw_text_is_confirmed_alongside_locality():
+    s = _apply(
+        BookingState(),
+        Patch(op=PatchOp.SET, field="pickup.locality", value="Koramangala", evidence="Koramangala"),
+    )
+    s = confirm_all(s)
+    assert get_field(s, "pickup.raw_text").status == FieldStatus.CONFIRMED
+
+
 # --- Notes ("any additional requirements") ---------------------------------
 
 

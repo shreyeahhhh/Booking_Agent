@@ -168,6 +168,7 @@ def confirm_all(state: BookingState, turn: int | None = None) -> BookingState:
 
 
 _TIME_FIELDS = ("schedule.time_window", "schedule.exact_time")
+_LOCALITY_FIELDS = ("pickup.locality", "drop.locality")
 _WRITABLE_OPS = (PatchOp.SET, PatchOp.CORRECT)
 
 
@@ -214,7 +215,49 @@ def _apply_one(
         turn=turn,
         current=current,
     )
-    return new_state, events + write_events
+    events += write_events
+
+    if patch.field in _LOCALITY_FIELDS and patch.evidence:
+        new_state, raw_text_events = _write_locality_raw_text(new_state, patch, turn)
+        events += raw_text_events
+
+    return new_state, events
+
+
+def _write_locality_raw_text(
+    state: BookingState, patch: Patch, turn: int
+) -> tuple[BookingState, list[str]]:
+    """Stash a locality patch's verbatim evidence into the sibling raw_text field.
+
+    Why this exists at all: STT will mangle Indian place names, and the
+    model's cleaned-up `value` (e.g. "Koramangala") can look confident even
+    when it is a guess at a mis-transcription. Keeping what was actually
+    quoted alongside it means that stays visible and recoverable rather than
+    silently overwritten by a confident-looking normalisation -- see
+    docs/design.md SS3.4. `Address.raw_text` existed in the schema since
+    phase 1 with no mechanism that ever populated it, the same shape as
+    booking_type/is_asap/notes were before step 2.2's fixes.
+
+    Modelled on `_apply_time_patch`: one patch legitimately writes two
+    Field[T]s, each independently going through `_write_scalar` so raw_text
+    gets the same CONFIRMED-guard and revision history as every other field,
+    rather than a bespoke unguarded write. `ambiguity` is always None here --
+    a raw quote cannot itself be "a bare city name" the way locality's own
+    resolved value can, so locality's ambiguity is never carried over.
+    """
+    raw_text_path = f"{patch.field.rsplit('.', 1)[0]}.raw_text"
+    current = get_field(state, raw_text_path)
+    return _write_scalar(
+        state,
+        raw_text_path,
+        patch.op,
+        value=patch.evidence,
+        ambiguity=None,
+        confidence=patch.confidence,
+        evidence=patch.evidence,
+        turn=turn,
+        current=current,
+    )
 
 
 def _write_scalar(

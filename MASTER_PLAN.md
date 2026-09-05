@@ -233,6 +233,30 @@ renderer entirely (referencing it would be dead code for a status that cannot oc
 than fixed here, since removing or wiring up a Phase 1 schema field is a decision worth
 raising on its own, not folding into an unrelated step.
 
+**Retroactively fixed** during a pass that swept every step's writeup in this file for a
+"noted, not fixed" item left dangling. `reducer._write_locality_raw_text` now stashes the
+patch's `evidence` into the sibling `raw_text` field whenever `pickup.locality` or
+`drop.locality` is set or corrected -- modelled on `_apply_time_patch`'s already-established
+"one patch, two Field writes" shape, so `raw_text` gets the same CONFIRMED-guard and
+revision history as every other field for free. `summary._render_address` now surfaces it
+as `Koramangala (heard as "Kore Mangala")`, but only when the two actually diverge
+(`_mentions_locality`: the interpreted value must be a substring of the raw evidence) --
+otherwise the common case ("from Koramangala" quoted as evidence for a value of
+"Koramangala") would flag every single booking for no reason.
+
+Live-probed against the real extractor before trusting the design, the same discipline as
+every other step: fed both a clean utterance and one with deliberately garbled locality
+text ("kore mangala", "white feeld"). In both cases the model returned `value == evidence`
+verbatim -- Rule 1 ("extract only what the user actually said, never infer a plausible
+value") means the extractor does not attempt to "clean up" a mangled name into a confident-
+looking real place, it just passes through whatever text it was given. So in practice
+`raw_text` mostly echoes `locality` rather than routinely catching a divergence, which is a
+narrower finding than design.md SS3.4's original framing implied. The fix is still correct
+and worth having: it costs nothing when the two agree, and it is now actually wired up to
+catch the case where they don't -- including real mangled STT output, which cannot be
+tested until step 3.4 wires a live microphone into this same path. Regression tests in
+`test_reducer.py` and `test_summary.py`.
+
 **Step 2.7 found the most significant bug in this project so far, and it took the full
 pipeline running live to surface it.** Scripted conversation, real API, real turns:
 

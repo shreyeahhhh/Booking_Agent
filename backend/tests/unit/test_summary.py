@@ -89,6 +89,38 @@ def test_landmark_is_included_when_given():
     assert "near the water tank" in build_summary(state)[0].value
 
 
+def test_raw_text_is_not_shown_when_it_just_wraps_the_locality_in_extra_words():
+    """evidence naturally quotes surrounding words ("from Koramangala" for a
+    value of "Koramangala") -- that is not a mis-transcription and must not
+    be flagged as one on every single booking."""
+    state = _apply(
+        BookingState(),
+        Patch(
+            op=PatchOp.SET,
+            field="pickup.locality",
+            value="Koramangala",
+            evidence="from Koramangala",
+        ),
+    )
+    assert build_summary(state)[0].value == "Koramangala"
+
+
+def test_raw_text_is_shown_when_it_diverges_from_the_interpreted_locality():
+    """The actual point of raw_text: STT mangles a place name, the model's
+    cleaned-up value is a guess, and the mismatch must stay visible rather
+    than being silently overwritten -- see docs/design.md SS3.4."""
+    state = _apply(
+        BookingState(),
+        Patch(
+            op=PatchOp.SET,
+            field="pickup.locality",
+            value="Koramangala",
+            evidence="Kore Mangala",
+        ),
+    )
+    assert build_summary(state)[0].value == 'Koramangala (heard as "Kore Mangala")'
+
+
 # --- schedule ----------------------------------------------------------------
 
 
