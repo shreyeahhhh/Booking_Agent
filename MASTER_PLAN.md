@@ -58,18 +58,31 @@ No module in this phase may import from `app/llm/` or `app/services/`.
 
 | # | Step | Files | Acceptance |
 |---|---|---|---|
-| 1.1 | Booking state schema with field provenance | `domain/state.py` | `Field[T]` carries value, status, confidence, evidence, turn, revisions. Round-trips through JSON. |
-| 1.2 | Declarative field specification table | `domain/specs.py` | One table drives completeness, question priority and answer types. Conditional requirements are predicates over state. |
-| 1.3 | Value normalisers | `domain/normalizers.py` | "tomorrow", "this Saturday", "next Friday", "morning", "half past four", "a couple" all resolve. **"Saturday" said *on* a Saturday resolves to the coming Saturday, not today.** |
-| 1.4 | Vehicle and helper inference | `domain/inference.py` | Item list → vehicle type + helper count via a lookup table. Pure function, no AI. |
-| 1.5 | Reducer with correction and conflict rules | `domain/reducer.py` | `op: set` against a `CONFIRMED` field is **rejected** as a conflict. `op: correct` replaces and pushes to `revisions[]`. Cascade invalidation resets derived fields. |
-| 1.6 | Completeness engine | `domain/completeness.py` | Pure fn → `missing[]`, `ambiguous[]`, `conflicts[]`. `AMBIGUOUS` counts as unfilled. |
-| 1.7 | Question policy | `domain/policy.py` | Selects the highest-priority unfilled slot. **Reads state only, never history** — a filled slot is unaskable. |
-| 1.8 | Unit test suite | `tests/unit/` | Includes the import-boundary test asserting `domain/` never imports `llm/` or `services/`. |
+| 1.1 | Booking state schema with field provenance | `domain/state.py` | ✅ `Field[T]` carries value, status, confidence, evidence, turn, revisions. Round-trips through JSON. |
+| 1.2 | Declarative field specification table | `domain/specs.py` | ✅ One table drives completeness, question priority and answer types. Conditional requirements are predicates over state. |
+| 1.3 | Value normalisers | `domain/normalizers.py` | ✅ "tomorrow", "this Saturday", "next Friday", "morning", "half past four", "a couple" all resolve. **"Saturday" said *on* a Saturday resolves to the coming Saturday, not today.** |
+| 1.4 | Vehicle and helper inference | `domain/inference.py` | ✅ Item list → vehicle type + helper count via a lookup table. Pure function, no AI. Calibrated so the docs' own worked examples (sofa alone; sofa + 3 cupboards) produce exactly the vehicle/helper numbers already committed to in design.md. |
+| 1.5 | Reducer with correction and conflict rules | `domain/reducer.py` | ✅ `op: set` against a `CONFIRMED` field is **rejected** as a conflict. `op: correct` replaces and pushes to `revisions[]`. Cascade invalidation resets derived fields, but never an explicitly user-confirmed one. |
+| 1.6 | Completeness engine | `domain/completeness.py` | ✅ Pure fn → `missing[]`, `ambiguous[]`, `conflicts[]`. `AMBIGUOUS` counts as unfilled. |
+| 1.7 | Question policy | `domain/policy.py` | ✅ Selects the highest-priority unfilled slot. **Reads state only, never history** — a filled slot is unaskable. Bounded clarification (give up after 2 attempts, record an assumption) included. |
+| 1.8 | Unit test suite | `tests/unit/` | ✅ 107 tests. Includes the import-boundary test asserting `domain/` never imports `llm/` or `services/` (9 files checked, 0 violations). |
 
 **Acceptance for the phase:** a scripted test feeds patches in scrambled order, applies
 two corrections and one contradiction, and asserts the exact final state — with no network
 calls and no API key set.
+
+**Acceptance met** — see `tests/unit/test_phase1_acceptance.py`.
+
+**Bugs the test suite caught before they could ship:**
+- `Field[T]` never actually stored *why* something was ambiguous (the reducer computed
+  a reason and threw it away) — added `Field.ambiguity: AmbiguityReason | None`.
+- The first-pass vehicle/helper thresholds contradicted the docs' own worked examples
+  (a bare sofa landed on a three-wheeler, not the Tata Ace design.md promises) —
+  retuned against the examples already committed to the documentation.
+- "A time phrase fills both the window and the exact time" was designed but never wired
+  into the reducer — it only wrote to whichever single field the patch targeted. Fixed
+  with a dedicated `_apply_time_patch` path.
+
 
 ---
 
