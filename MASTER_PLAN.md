@@ -295,7 +295,7 @@ acceptance criterion, live, not simulated.
 
 | # | Step | Files | Acceptance |
 |---|---|---|---|
-| 3.1 | STT service | `services/stt.py` | Groq `whisper-large-v3-turbo`. Empty/noise transcripts handled without an LLM call. |
+| 3.1 | STT service | `services/stt.py` | ✅ Groq `whisper-large-v3-turbo`. Empty/noise transcripts handled without an LLM call. |
 | 3.2 | TTS service + audio cache | `services/tts.py` | Groq Orpheus. Sentence chunking for the 200-char limit. Cache keyed by text hash. Browser `speechSynthesis` fallback flag. |
 | 3.3 | Fast-path classifier | `conversation/fastpath.py` | Yes/no, meta-commands, bare numerics. **Fails open to the LLM.** |
 | 3.4 | `/turn` endpoint | `api/routes.py` | Orchestrates STT → fastpath/extract → reduce → policy → template → TTS. |
@@ -303,6 +303,45 @@ acceptance criterion, live, not simulated.
 | 3.6 | Live state panel | `frontend/src/` | Fields fill as they are captured; corrections render as `Kakkanad (was: Kochi)`. This is the evidence exhibit for the whole architecture. |
 
 **Acceptance:** a complete booking spoken end to end on localhost, under ~2.5s per turn.
+
+**Step 3.1 was probed live before the classifier was written, not after.** The acceptance
+criterion needed a real answer to "what does empty/noise audio actually look like coming
+back from Groq's Whisper?" rather than an assumption, so three rounds of synthetic audio
+(true digital silence, low-amplitude noise, random/tonal noise, at durations from 0.3s to
+3s) went to `whisper-large-v3-turbo` before any production code existed:
+
+- Silence and low-amplitude noise deterministically transcribe as `"Thank you."` — a
+  documented Whisper quirk (captioned-video training data) reproduced against this
+  project's own model rather than taken on faith.
+- Random/tonal noise comes back as a lone punctuation mark (`" ."`), which needs no
+  hallucination list at all — stripping punctuation and checking for anything
+  alphanumeric catches it for free.
+
+`services/stt.is_noise` is exactly those two checks, kept deliberately narrow: nothing
+keys off transcript length, so a genuine short answer like "yes" is never at risk. One
+plausible-looking alternative was tried and rejected: Whisper's `verbose_json` response
+exposes a per-segment `no_speech_prob`, which reads as the more "principled" signal — live
+testing showed Groq's deployment returns `0` for every segment regardless of actual audio
+content, so it carries no information on this API and would have been dead weight dressed
+up as rigor. `tests/unit/test_stt_live.py` re-runs the original probe as a permanent,
+sub-cent live test so a future change in Groq's behaviour is caught by the suite rather
+than discovered mid-demo. See docs/architecture.md's "Detecting empty/noise transcripts"
+for the full probe table.
+
+`transcribe()`'s retry set deliberately differs from `llm/extractor.py`'s: a 400 there is
+retried because it is the observed strict-mode schema-violation quirk a retry can plausibly
+fix; a 400 on the transcription endpoint was reasoned to mean something structurally wrong
+with the request instead. That reasoning first shipped as an analogy to extractor.py, not
+as something actually tested — caught on review, since every other claim in this step had
+been verified live and this one had not. Probed the same way as the noise behaviour above:
+malformed bytes, a zero-byte file, an unsupported extension, and audio shorter than Whisper's
+minimum all return a 400 with a specific, human-readable structural message (`"could not
+process file - is it a valid media file?"`, `"file is empty"`, `"file must be one of the
+following types: [...]"`, `"Audio file is too short..."`), and sending the exact same
+malformed request twice in a row reproduces the identical message both times — direct proof
+an identical retry cannot help. The reasoning held; it just wasn't proven yet when first
+written down. `test_stt_live.py::test_malformed_audio_is_a_structural_400_not_a_transient_one`
+keeps that proof live going forward.
 
 ---
 

@@ -136,6 +136,35 @@ Any miss falls through to the LLM. Correctness is never traded for a saved call 
 `tests/unit/test_fastpath_safety.py` asserts the fast path *declines* to match on an
 adversarial corpus.
 
+### Detecting empty/noise transcripts (step 3.1)
+
+`services/stt.is_noise` decides the "Empty / noise / silence from STT" row above. It is
+not a guess dressed up as an engineering decision — it is the direct result of probing
+Groq's actual `whisper-large-v3-turbo` deployment live before writing the classifier:
+
+| Input audio | Observed transcript (temperature 0) |
+|---|---|
+| True digital silence, 0.3s–3s | `"Thank you."`, every time |
+| Low-amplitude noise (room-tone level) | `"Thank you."`, every time |
+| Random white noise / a pure tone | `" ."` — a lone punctuation mark |
+
+The first result is Whisper's well-documented tendency to hallucinate video-outro phrases
+on silence, a side effect of training on captioned web video — reproduced here against the
+project's own model rather than assumed from folklore. The second needed no hallucination
+list at all: stripped of punctuation, nothing alphanumeric survives. `is_noise` is therefore
+two narrow checks — punctuation-stripped-to-nothing, or an exact match against a short set
+of *observed* hallucinations (currently just `"thank you"`) — and deliberately never keys
+off transcript length, so a genuine short answer like "yes" or "third floor" is never at
+risk of being misclassified. `tests/unit/test_stt_live.py` re-runs this exact probe as a
+permanent, low-cost live test so a future change in Groq's Whisper behaviour is caught by
+the suite rather than discovered mid-demo.
+
+One rejected alternative: Whisper's `verbose_json` response includes a per-segment
+`no_speech_prob`, which looks like the principled signal to use instead of a text
+heuristic. Tested live and discarded — Groq's deployment returns `0` for every segment
+regardless of actual content, silence included, so the field carries no information on
+this API. Using it would have looked more rigorous while actually being dead weight.
+
 ## Keeping templated speech natural
 
 Responses are composed, not canned:
