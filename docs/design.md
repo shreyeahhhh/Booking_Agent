@@ -140,8 +140,7 @@ The core design judgement. Each field is one of four kinds:
 |---|---|---|---|
 | 10 | `pickup.locality` | Required | |
 | 20 | `drop.locality` | Required | |
-| 30 | `goods.category` | Required | Usually inferred from the opening utterance |
-| 40 | `goods.items` | Conditional | Required unless `goods.category == parcel_documents` |
+| 30 | `goods.items` | Required | Unconditional -- see note below on why `goods.category` is not asked here |
 | 50 | `schedule.date` | Required | |
 | 55 | `schedule.time_window` | Conditional | Required unless `schedule.is_asap == true` |
 | 60 | `pickup.floor` | Conditional | Only if goods are furniture / appliances / household |
@@ -152,7 +151,7 @@ The core design judgement. Each field is one of four kinds:
 | 85 | `service.needs_packing` | Conditional | Only if `goods.category == household_mixed` |
 | 90 | `service.vehicle_type` | Inferred | Proposed from items, then confirmed |
 | 95 | `service.helpers_required` | Inferred | Proposed from item weight and floors |
-| — | `*.landmark`, `schedule.exact_time`, `notes`, `booking_type` | Optional | Never asked; see note below |
+| — | `goods.category`, `*.landmark`, `schedule.exact_time`, `notes`, `booking_type` | Optional | Never asked; see note below |
 
 ### 3.4 Rationale for the notable choices
 
@@ -182,11 +181,29 @@ what it guessed is more trustworthy than one that guesses silently.
 in this system ever actually derives it, which surfaced as a real bug while writing the
 extractor prompt (step 2.2): the two predicates that read it (`goods.items`,
 `service.needs_packing`) could never see it change, so they were permanently stuck at
-their default answer. Fixed by rekeying both off `goods.category` instead, which is a
-required field the extractor reliably populates. `booking_type` itself is kept as a plain
-optional field the extractor may fill in when the user states the scale of the job
-directly ("I'm moving my whole flat") — used only to make the final summary read more
-naturally, with no gating role.
+their default answer. Fixed by rekeying both off `goods.category` instead. `booking_type`
+itself is kept as a plain optional field the extractor may fill in when the user states
+the scale of the job directly ("I'm moving my whole flat") — used only to make the final
+summary read more naturally, with no gating role.
+
+**`goods.category` is inferred from items, not asked about directly, for a reason found
+the same way as the `booking_type` bug above — by actually running a live conversation,
+not by reasoning about the design on paper.** It was originally a directly-asked
+`Required` field. Live, this got permanently stuck: the extractor's own Rule 1 ("never
+infer a value the user did not state") correctly refuses to guess "furniture" just because
+the user said "sofa" — categorising an item *is* a form of inference that rule is right to
+forbid. But almost no one naturally says the word "furniture" out loud; they name the
+things they're moving. A category that can only be filled by the user saying a category
+word gets stuck forever, and a live run showed exactly this: the agent asked "what kind of
+things need to be moved?" three turns running while the user answered other questions
+entirely, and one of those stray answers landed on the wrong field as a result. Moving the
+classification into `domain.inference.infer_category` (a keyword lookup over the item
+list, the same shape as the vehicle guess) sidesteps Rule 1 entirely: this is not the
+model inferring an unstated fact, it is code classifying a fact the user already gave
+explicitly (the item name). `goods.items` (SS3.3's table, priority 30) is unconditionally
+required as a consequence — it no longer waits on a category that would not exist yet
+either way, which also removes a circular dependency the original design had (items
+needed category; category needed items).
 
 ### 3.5 Deliberately excluded
 
@@ -364,21 +381,34 @@ user *hear* retention working.
 
 ### 5.6 Final summary
 
-Generated deterministically from state. Structure:
+Generated deterministically from state (`conversation/summary.py`), never phrased by the
+model. Structure:
 
 ```
 Pickup      Koramangala, 3rd floor, lift available
 Drop        Whitefield, ground floor
-Date/time   Saturday 12 September, evening (4-8pm)
-Items       1 sofa, 3 cupboards
-Vehicle     Tata Ace (suggested)
+Date/time   Saturday, 12 September, evening (4-8pm)
+Items       a sofa and 2 cupboards
+Vehicle     Tata Ace
 Helpers     2
 Notes       Fragile items - handle with care
-Assumed     Time window taken as evening; exact time not specified
+Corrected   drop location (was Kochi)
+Assumed     Could not fully clarify drop location; kept as stated: 'Kochi'.
 ```
 
+`Vehicle` is never annotated "(suggested)" the way an earlier draft of this document showed
+it: SS5.1's phase machine only reaches `REVIEW` once `CONFIRM_INFERRED` has resolved (or
+never applied at all, for a booking with no items), so by the time a summary is shown,
+`vehicle_type` is always either absent or `CONFIRMED` -- there is no code path that
+displays an unconfirmed guess as final. `Corrected` lists only fields that were actually
+corrected (not a status report on every field), and `Assumed` surfaces exactly what
+step 5.4's bounded clarification recorded when it gave up.
+
 Spoken in condensed form (Orpheus caps input at 200 characters per request, so it is
-chunked by sentence); displayed in full on screen.
+chunked by sentence); displayed in full on screen. The condensed spoken form is phase 3
+work -- it depends on real TTS behaviour to get the chunking right, not something to guess
+at ahead of time. `summary.py`'s structured line list is the seam: a future spoken
+renderer consumes the same lines the text renderer does, rather than re-deriving them.
 
 ---
 

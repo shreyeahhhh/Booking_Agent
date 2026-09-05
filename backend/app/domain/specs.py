@@ -73,19 +73,6 @@ class FieldSpec:
 # or an interview question can point at a specific, readable rule.
 
 
-def _needs_items(state: BookingState) -> bool:
-    """Every category except a parcel/document drop-off needs an item list.
-
-    Keyed off `goods.category` rather than `booking_type`: category is a
-    required field the extractor reliably populates, whereas nothing in this
-    system ever sets `booking_type` on its own (see the note on it in
-    docs/design.md SS3.2 -- it is an optional field the extractor may fill in
-    if the user states it, used for summary framing, not for gating any
-    requirement).
-    """
-    return state.goods.category.value != GoodsCategory.PARCEL_DOCUMENTS
-
-
 def _pickup_floor_matters(state: BookingState) -> bool:
     return _goods_need_floor_handling(state)
 
@@ -95,7 +82,15 @@ def _drop_floor_matters(state: BookingState) -> bool:
 
 
 def _goods_need_floor_handling(state: BookingState) -> bool:
-    """Floors only matter when there is physical furniture/appliances to carry."""
+    """Floors only matter when there is physical furniture/appliances to carry.
+
+    `goods.category` is populated by `domain.inference.infer_category` from
+    the item list, not asked about directly (see that module's docstring for
+    why: a category the model can only fill by the user saying a category
+    word out loud gets stuck forever). This predicate does not care how the
+    value got there -- it becomes true the moment items make the category
+    inferrable, which is exactly when it should.
+    """
     category = state.goods.category.value
     return category in (
         GoodsCategory.FURNITURE,
@@ -137,9 +132,9 @@ def _time_window_matters(state: BookingState) -> bool:
 def _needs_packing_check(state: BookingState) -> bool:
     """Packing help is worth asking about for a mixed household load.
 
-    Keyed off `goods.category` for the same reason as `_needs_items` above --
-    "household_mixed" is a reasonable, already-reliable proxy for "this is a
-    house-shifting-scale job" without depending on the never-set `booking_type`.
+    "household_mixed" is a reasonable proxy for "this is a house-shifting-
+    scale job". See `_goods_need_floor_handling` above for where the
+    category value this reads actually comes from.
     """
     return state.goods.category.value == GoodsCategory.HOUSEHOLD_MIXED
 
@@ -147,14 +142,12 @@ def _needs_packing_check(state: BookingState) -> bool:
 FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("pickup.locality", 10, RequirementKind.REQUIRED, "pickup location"),
     FieldSpec("drop.locality", 20, RequirementKind.REQUIRED, "drop location"),
-    FieldSpec("goods.category", 30, RequirementKind.REQUIRED, "type of goods", AnswerType.ENUM),
-    FieldSpec(
-        "goods.items",
-        40,
-        RequirementKind.CONDITIONAL,
-        "items to move",
-        required_when=_needs_items,
-    ),
+    # goods.category has no spec entry: it is inferred from these items
+    # (domain.inference.infer_category), never asked about directly. Every
+    # booking needs at least one item description -- even a parcel drop-off
+    # is just an item like "documents" -- so this is unconditionally
+    # required, not gated on a category that would not exist yet anyway.
+    FieldSpec("goods.items", 30, RequirementKind.REQUIRED, "items to move"),
     FieldSpec("schedule.date", 50, RequirementKind.REQUIRED, "date", AnswerType.DATE),
     FieldSpec(
         "schedule.time_window",
@@ -235,6 +228,8 @@ _SPECS_BY_PATH: dict[str, FieldSpec] = {spec.field_path: spec for spec in FIELD_
 # booking_type and is_asap go unused for a whole phase.
 OPTIONAL_SCALAR_PATHS: tuple[str, ...] = (
     "booking_type",
+    "goods.category",  # inferred from items (domain.inference.infer_category); see
+    # _goods_need_floor_handling's docstring above for why this has no spec entry
     "schedule.is_asap",
     "schedule.exact_time",
     "pickup.landmark",

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from app.domain.reducer import apply, confirm_all
 from app.domain.specs import get_field
-from app.domain.state import BookingState, FieldStatus, Patch, PatchOp
+from app.domain.state import BookingState, FieldStatus, GoodsCategory, Patch, PatchOp
 
 REF = datetime(2026, 9, 11, 10, 0)
 
@@ -28,8 +28,6 @@ def test_an_enum_typed_field_is_stored_as_a_real_enum_member_not_a_raw_string():
     by string key), but wrong, and it broke the first templates.py code that
     called .value expecting an actual enum instance. Caught by driving a
     real conversation through templates.py, not by any narrower unit test."""
-    from app.domain.state import GoodsCategory
-
     s = _apply(BookingState(), Patch(op=PatchOp.SET, field="goods.category", value="furniture"))
     value = get_field(s, "goods.category").value
     assert value is GoodsCategory.FURNITURE
@@ -296,6 +294,47 @@ def test_item_change_never_overwrites_an_explicitly_confirmed_vehicle():
     f = get_field(s2, "service.vehicle_type")
     assert f.status == FieldStatus.CONFIRMED
     assert f.value == confirmed_vehicle
+
+
+def test_category_is_inferred_immediately_when_the_first_item_is_added():
+    """The bug a live conversation test caught: goods.category is a REQUIRED
+    field the extractor's own Rule 1 can never fill from an item name alone
+    ("sofa" is not "furniture"), which got it permanently stuck and derailed
+    the entire rest of the conversation. Inferring it from items the moment
+    they exist removes the stuck field entirely."""
+    s = _apply(
+        BookingState(), Patch(op=PatchOp.APPEND, field="goods.items", value={"name": "sofa"})
+    )
+    category = get_field(s, "goods.category")
+    assert category.value == GoodsCategory.FURNITURE
+    assert category.status == FieldStatus.INFERRED
+
+
+def test_category_re_infers_as_more_items_are_added():
+    """Regression for a bug in the fix itself: an earlier version set the
+    inferred category to PROVIDED, which is indistinguishable from a value
+    the user stated explicitly -- once set, a sofa-only booking that later
+    added a fridge would keep reporting furniture forever, since nothing
+    re-checks a field that already looks user-confirmed. INFERRED status
+    (the same status vehicle_type uses) keeps it re-inferrable."""
+    s = _apply(
+        BookingState(), Patch(op=PatchOp.APPEND, field="goods.items", value={"name": "sofa"})
+    )
+    assert get_field(s, "goods.category").value == GoodsCategory.FURNITURE
+
+    s2 = _apply(s, Patch(op=PatchOp.APPEND, field="goods.items", value={"name": "fridge"}))
+    assert get_field(s2, "goods.category").value == GoodsCategory.HOUSEHOLD_MIXED
+
+
+def test_an_explicit_category_is_never_overwritten_by_item_changes():
+    """Mirrors test_item_change_never_overwrites_an_explicitly_confirmed_
+    vehicle above: the user is always allowed to state something themselves
+    and have it stick, even for a field that is normally auto-classified."""
+    s = _apply(BookingState(), Patch(op=PatchOp.SET, field="goods.category", value="other"))
+    s2 = _apply(s, Patch(op=PatchOp.APPEND, field="goods.items", value={"name": "sofa"}))
+    category = get_field(s2, "goods.category")
+    assert category.value == GoodsCategory.OTHER
+    assert category.status == FieldStatus.PROVIDED
 
 
 def test_confirm_all_only_promotes_provided_and_inferred_fields():

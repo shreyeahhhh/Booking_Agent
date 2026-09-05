@@ -18,7 +18,7 @@ def test_empty_state_is_missing_the_unconditional_required_fields():
     for path in (
         "pickup.locality",
         "drop.locality",
-        "goods.category",
+        "goods.items",
         "schedule.date",
         "schedule.time_window",
     ):
@@ -38,14 +38,18 @@ def test_ambiguous_field_counts_as_both_missing_and_ambiguous():
 
 
 def test_filling_every_required_field_clears_missing_for_a_parcel():
-    """A parcel/document booking is the one case where an item list is not
-    required (specs.py's _needs_items) -- filling the other four required
-    fields plus this category should leave nothing missing at all."""
+    """A parcel/document booking is still just an item (something named
+    "documents"), not a category-only booking -- goods.items is
+    unconditionally required (see specs.py's test_items_are_required_
+    regardless_of_category). Providing that one lightweight item, plus the
+    other required fields, is enough to clear missing() entirely: category
+    gets inferred from the item automatically, and a "documents" item does
+    not trigger the furniture/appliance floor-handling predicates."""
     s = _apply(
         BookingState(),
         Patch(op=PatchOp.SET, field="pickup.locality", value="Koramangala"),
         Patch(op=PatchOp.SET, field="drop.locality", value="Whitefield"),
-        Patch(op=PatchOp.SET, field="goods.category", value="parcel_documents"),
+        Patch(op=PatchOp.APPEND, field="goods.items", value={"name": "documents"}),
         Patch(op=PatchOp.SET, field="schedule.date", value="2026-09-12"),
         Patch(op=PatchOp.SET, field="schedule.time_window", value="evening"),
     )

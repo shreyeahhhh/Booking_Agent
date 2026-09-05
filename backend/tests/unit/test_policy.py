@@ -35,7 +35,7 @@ def test_priority_order_is_respected():
         Patch(op=PatchOp.SET, field="drop.locality", value="Whitefield"),
     )
     _, decision = policy.sweep_and_select(s)
-    assert decision.field_path == "goods.category"  # priority 30, next unfilled
+    assert decision.field_path == "goods.items"  # priority 30, next unfilled
 
 
 def test_conflicts_take_priority_over_everything_else():

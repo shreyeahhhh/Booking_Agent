@@ -5,8 +5,8 @@ design.md SS3.4 and SS5.6 both commit to these exact outcomes in prose, so a
 regression here would make the documentation wrong, not just the code.
 """
 
-from app.domain.inference import infer_vehicle_and_helpers
-from app.domain.state import Item, VehicleType
+from app.domain.inference import infer_category, infer_vehicle_and_helpers
+from app.domain.state import GoodsCategory, Item, VehicleType
 
 
 def test_no_items_means_no_guess():
@@ -55,3 +55,34 @@ def test_unrecognised_item_names_still_produce_a_reasonable_guess():
     result = infer_vehicle_and_helpers([Item(name="a mysterious large crate", quantity=1)])
     assert result is not None
     assert result.vehicle_type is not None
+
+
+# --- category ----------------------------------------------------------
+
+
+def test_infer_category_returns_none_with_no_items():
+    assert infer_category([]) is None
+
+
+def test_infer_category_single_furniture_item():
+    assert infer_category([Item(name="sofa")]) == GoodsCategory.FURNITURE
+
+
+def test_infer_category_single_appliance_item():
+    assert infer_category([Item(name="fridge")]) == GoodsCategory.APPLIANCES
+
+
+def test_infer_category_mixed_furniture_and_appliances_is_household_mixed():
+    assert infer_category([Item(name="sofa"), Item(name="fridge")]) == GoodsCategory.HOUSEHOLD_MIXED
+
+
+def test_infer_category_parcel_keywords():
+    assert infer_category([Item(name="documents")]) == GoodsCategory.PARCEL_DOCUMENTS
+    assert infer_category([Item(name="a small parcel")]) == GoodsCategory.PARCEL_DOCUMENTS
+
+
+def test_infer_category_unrecognised_item_is_other_not_none():
+    """OTHER, not None: there is something to classify, just nothing this
+    heuristic recognises -- an honest "we don't know" category, not a
+    refusal to answer that would leave the field looking empty."""
+    assert infer_category([Item(name="a mysterious large crate")]) == GoodsCategory.OTHER
