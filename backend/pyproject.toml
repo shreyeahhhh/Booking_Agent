@@ -1,0 +1,20 @@
+[project]
+name = "booking-agent"
+version = "0.1.0"
+description = "Porter-style voice booking agent with a deterministic core"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+markers = [
+    "llm: tests that call the Groq API live (deselect with '-m \"not llm\"')",
+]

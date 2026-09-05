@@ -1,0 +1,35 @@
+# ---- Secrets ----
+.env
+.env.local
+*.key
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Node / frontend ----
+node_modules/
+dist/
+.vite/
+*.local
+
+# ---- Generated / cached artifacts ----
+# Pre-synthesised TTS audio cache (regenerated on demand)
+backend/.tts_cache/
+# Recorded LLM responses for replay tests are COMMITTED on purpose;
+# only the scratch directory is ignored.
+backend/tests/.scratch/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
