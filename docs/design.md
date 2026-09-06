@@ -50,6 +50,7 @@ answer to "how do you know you have met the requirements?"
 | Brief expectation | Mechanism | Module | Verified by |
 |---|---|---|---|
 | Understand requirements through voice | STT → extractor → state | `services/stt.py`, `llm/extractor.py` | Manual voice matrix |
+| Respond by voice | Deterministic template text → chunked, cached TTS | `services/tts.py`, `conversation/templates.py` | Manual voice matrix |
 | Natural, conversational interaction | Composed acknowledgment + rotated question variants | `conversation/templates.py` | Manual voice matrix |
 | Ask relevant follow-up questions | Priority policy over unfilled slots | `domain/policy.py` | `test_policy.py` |
 | Identify missing information | Declarative `FieldSpec` table + completeness engine | `domain/specs.py`, `domain/completeness.py` | `test_completeness.py` |
