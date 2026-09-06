@@ -23,6 +23,10 @@ def test_health_never_leaks_the_api_key() -> None:
     with TestClient(app) as client:
         response = client.get("/api/health")
 
-    # It reports whether a key exists, never the key itself.
-    assert "llm_configured" in response.json()
+    # It reports whether a key exists, never the key itself -- for both
+    # credentials this app holds now, not just Groq's.
+    body = response.json()
+    assert "llm_configured" in body
+    assert "tts_configured" in body
     assert "gsk_" not in response.text
+    assert "sk_car_" not in response.text

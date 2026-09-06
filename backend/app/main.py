@@ -9,6 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from groq import AsyncGroq
@@ -32,18 +33,42 @@ async def lifespan(app: FastAPI):
         )
     # One client for the process lifetime, not one per request: AsyncGroq
     # holds a connection pool, and every /turn call already makes up to
-    # three separate Groq calls (STT, maybe the LLM, TTS) -- there is no
-    # reason to pay connection setup on each one. None when unconfigured,
-    # matching the rest of this app's "starts fine without a key, fails
-    # clearly only where a key is actually needed" contract (config.py).
+    # two Groq calls now (STT, maybe the LLM) -- there is no reason to pay
+    # connection setup on each one. None when unconfigured, matching the
+    # rest of this app's "starts fine without a key, fails clearly only
+    # where a key is actually needed" contract (config.py).
     app.state.groq_client = (
         AsyncGroq(api_key=settings.groq_api_key) if settings.is_configured else None
+    )
+    # TTS moved to Cartesia (see services/tts.py's module docstring for why);
+    # a second, independent client and a second, independent credential.
+    # cartesia_is_configured is deliberately allowed to be False without
+    # blocking startup or any turn -- services/tts.synthesize() treats a
+    # None client exactly like a failed call, falling straight through to
+    # the existing browser speechSynthesis fallback.
+    if not settings.cartesia_is_configured:
+        log.warning(
+            "CARTESIA_API_KEY is not set. Responses will use the browser's "
+            "speechSynthesis fallback instead of Cartesia TTS."
+        )
+    app.state.cartesia_client = (
+        httpx.AsyncClient(
+            base_url="https://api.cartesia.ai",
+            headers={
+                "Authorization": f"Bearer {settings.cartesia_api_key}",
+                "Cartesia-Version": "2026-08-14",
+            },
+        )
+        if settings.cartesia_is_configured
+        else None
     )
     try:
         yield
     finally:
         if app.state.groq_client is not None:
             await app.state.groq_client.close()
+        if app.state.cartesia_client is not None:
+            await app.state.cartesia_client.aclose()
 
 
 app = FastAPI(title="Voice Booking Agent", version="0.1.0", lifespan=lifespan)

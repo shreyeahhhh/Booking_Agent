@@ -877,6 +877,87 @@ realistic siblings, the past-date-rolls-forward rule, the non-date phrases must 
 misread by `fuzzy=True`, and the formatter/acknowledgment path surviving a phrase that
 still cannot be resolved at all.
 
+**TTS moved from Groq Orpheus to Cartesia.** Not a bug fix, a provider swap driven by a
+real, already-documented risk finally forcing the issue: Orpheus's free tier is 3600
+tokens/*day*, and this project's own development testing had already exhausted it more
+than once (step 3.2's risk register). This submission's entire point is a human evaluator
+testing the live deploy -- a "sorry, try again in a few hours" wall mid-demo would be a
+worse outcome than almost anything else that could go wrong. Compared live rather than
+picked from memory: Deepgram (STT + TTS from one $200 one-time credit, confirmed via
+Deepgram's own current pricing page), ElevenLabs (10,000 chars/month), and Cartesia
+(20,000 chars/month, Sonic model, no card required to sign up) -- Cartesia chosen
+specifically because its free tier resets *monthly* rather than *daily* (the exact axis
+Orpheus failed on) and its own marketed latency (~40-90ms) is faster than every other
+option researched, including Orpheus. STT stayed on Groq Whisper deliberately: its own
+free tier (2000 requests/day, 8 hours of audio/day, confirmed from Groq's own rate-limit
+docs) was never actually at risk the way Orpheus's was, and switching it would have thrown
+away the Kerala/Karnataka locality-prompt tuning already confirmed working live, for no
+reliability benefit.
+
+`services/tts.py` now calls Cartesia's REST API directly via `httpx.AsyncClient` rather
+than a vendor SDK -- httpx was already an installed transitive dependency of `groq`, the
+wire contract is a single simple JSON POST, and a raw client keeps this module's own
+timeout/retry/fallback shape identical to `services/stt.py`'s and `llm/extractor.py`'s
+rather than learning a second SDK's own exception hierarchy under a one-week deadline.
+`app/retry.py`'s `retry_after_seconds` was generalised to take a plain `httpx.Response`
+instead of a `groq.RateLimitError` specifically (the latter's `.response` was already an
+httpx.Response underneath) so Cartesia's 429s share the exact same backoff logic Groq's
+already used, rather than duplicating it for a second provider.
+
+Two things were verified live before trusting them, not assumed from documentation, the
+same discipline as every other integration in this project:
+
+- **The exact request shape.** Cartesia's docs describe `voice` as accepting either a bare
+  ID string or `{"id": "uuid"}`; live-tested both (plus a third, SDK-example-only
+  `{"mode": "id", "id": "uuid"}` shape) against the real API before picking the simplest
+  one that worked -- the bare string.
+- **The WAV output's own quirk.** Cartesia's response uses the streaming convention of an
+  unknown-length sentinel (`0xFFFFFFFF`) in both the RIFF and `data` chunk size fields,
+  not the real byte count, plus an extra `LIST` metadata chunk between `fmt` and `data` --
+  a naive fixed-offset parser breaks on this (confirmed by one of this project's own debug
+  scripts doing exactly that), but proper chunk-walking does not. Confirmed the actual
+  consumer -- a real browser `<audio>` element, the exact mechanism `frontend/src/audio.ts`
+  uses -- plays it correctly regardless: a saved response loaded over local HTTP reached
+  `ended` with a correct, non-infinite `duration` despite the sentinel header. Kept as a
+  permanent live regression test (`test_tts_live.py::test_wav_output_uses_a_streaming_
+  length_sentinel_not_the_real_size`) rather than a one-off debugging note, so a future
+  Cartesia change that broke this would be caught by the suite.
+
+`Settings.cartesia_is_configured` mirrors `is_configured` but is deliberately a *soft*
+check: `services/tts.synthesize()` treats a `None` client (what `get_cartesia_client`
+returns when the key is absent) exactly like a failed API call, falling straight through
+to the browser `speechSynthesis` fallback that already existed -- a deploy missing only
+`CARTESIA_API_KEY` degrades a turn's voice, not its correctness, unlike a missing
+`GROQ_API_KEY`, which still hard-fails (STT and the LLM are not optional). `/api/health`
+gained `tts_configured` alongside the existing `llm_configured`, so this is checkable on
+the live URL itself the same way the existing field already is.
+
+**Verified:** full offline suite and lint clean (`test_process_turn.py`,
+`test_api_turn.py`, `test_config.py`, `test_retry.py` and `test_tts.py` all updated for
+the new client type and call shape); the full live suite re-run against the real APIs,
+including four new live Cartesia tests (a short synthesis round-trip, the configured
+voice/model, a chunk at the self-imposed max length, and the WAV sentinel-header
+regression above) -- all four passed on the first live run against the real account.
+
+**A live re-run of the unrelated, already-existing `test_stt_live.py` safety-property
+test also surfaced a fresh instance of a residual gap this project already found and
+accepted in an earlier session, not a new regression from this change.** Silence
+transcribed as "Krala, Kerala." slipped past `is_noise()` and was extracted by the real
+LLM as `pickup.locality = "Krala, Kerala"` with no ambiguity flag -- the same class of
+finding as the earlier "Kerala places, Kosovo." case, but a different, garbled phrase that
+`_PROMPT_ECHO_PREFIXES` does not match (it starts with "krala", not "kerala places"), and
+one the existing bare-city-name validator (`_BARE_CITY_NAMES` in `domain/reducer.py`) does
+not catch either -- that list holds *cities* ("Kochi", "Bangalore"), not state names, and
+its match is exact-string, not fuzzy, so it would not have caught this particular garbled
+value even extended. This is left as an accepted, documented risk rather than chased
+further in this same pass: it is orthogonal to the TTS provider switch this session's
+actual task was, `is_noise()` and the extractor-ambiguity backstop are both already
+understood (per the earlier session's investigation) to be best-effort rather than a
+guarantee, and the live test that caught it is itself designed to occasionally surface
+exactly this kind of counter-example against a nondeterministic external model, not to
+pass unconditionally. Worth a dedicated pass if there is time before submission, not
+worth rushing into the same sitting as an unrelated provider migration.
+
 ---
 
 ## Phase 4 — Deployment and resilience (Day 4)
@@ -1030,8 +1111,9 @@ origin and protocol for free.
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | Groq free-tier limits (8k TPM / 200k TPD on the LLM) stall development | High | Add paid credit on Day 1. Whole-week spend is estimated under $5. |
-| **Orpheus TTS has its own, much tighter free-tier limit (3600 TPD)**, separate from the LLM's | High -- confirmed live in step 3.2, already partly consumed by that step's own testing | Synthesise sparingly during development (the audio cache means production usage is far lighter than test sweeps); add paid credit before phase 3's voice UI work needs repeated real synthesis |
-| **Submission-week evaluator load exceeds free-tier quota mid-review** -- several evaluators each running a few 2-3 minute conversations is a realistic multiple of any single tier's daily cap, and the confirmed 3600 TPD Orpheus ceiling above shows this is not hypothetical | High, once the demo link is actually shared | Before sending the submission email (7.4): move all three services (STT, LLM, TTS) to a paid-but-cheap tier for the review window, not just the LLM (this register's own "under $5" estimate above was a development-week estimate, not a multi-evaluator one). The response-template audio cache (3.2) means repeat phrases cost nothing after the first evaluator, which helps but does not eliminate the risk for the necessarily-unique parts of every conversation (localities, items). |
+| ~~Orpheus TTS has its own, much tighter free-tier limit (3600 TPD)~~ Resolved -- TTS moved to Cartesia | Was High -- confirmed live in step 3.2, already partly consumed by that step's own testing | Cartesia's free tier (20,000 chars/month, no card) resets monthly rather than daily, the exact axis Orpheus failed on -- see MASTER_PLAN.md's Cartesia switch write-up |
+| Cartesia's own free tier (20,000 chars/month) is still finite, just larger and monthly rather than daily | Medium -- not yet observed to exhaust, unlike Orpheus's, but this project's own dev testing has already spent some of it | Same mitigation as before: the audio cache means production usage is far lighter than test sweeps; add paid credit before the submission-week evaluator-load risk below if the free balance looks tight |
+| **Submission-week evaluator load exceeds free-tier quota mid-review** -- several evaluators each running a few 2-3 minute conversations is a realistic multiple of any single tier's daily/monthly cap, and the now-resolved Orpheus 3600 TPD ceiling above showed this is not hypothetical | High, once the demo link is actually shared | Before sending the submission email (7.4): move Groq (STT + LLM) and Cartesia (TTS) to a paid-but-cheap tier for the review window, not just the LLM (this register's own "under $5" estimate above was a development-week estimate, not a multi-evaluator one). The response-template audio cache (3.2) means repeat phrases cost nothing after the first evaluator, which helps but does not eliminate the risk for the necessarily-unique parts of every conversation (localities, items). |
 | Cold start makes the demo look broken | High | Explicit UI state built (4.3, `isSlowStart` in `App.tsx`); not yet observed against a real cold host, since that needs an actual deploy |
 | A rate-limit retry can't help if the limit is a daily quota, not a short one | Resolved in 4.4 -- confirmed live in step 3.2 (a `RateLimitError` said "try again in 5h40m0s"; one immediate no-backoff retry cannot address that) | `app/retry.py` reads the real `Retry-After` header and only retries when it names a short wait; otherwise falls straight through to the existing degraded fallback across all three Groq-calling modules |
 | A long spoken summary is tedious to listen to (not an Orpheus input-length problem -- step 3.2 found there is no enforced cap -- but a genuine UX one) | Medium | Sentence chunking for streamed playback; fall back to displaying the full written summary while speaking a condensed one |

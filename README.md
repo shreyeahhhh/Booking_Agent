@@ -57,13 +57,14 @@ Full detail in [`docs/architecture.md`](docs/architecture.md).
 | Voice capture | `MediaRecorder` + `AnalyserNode` silence detection |
 | Speech-to-text | Groq `whisper-large-v3-turbo` |
 | LLM | Groq `openai/gpt-oss-120b` (strict structured outputs) |
-| Text-to-speech | Groq `canopylabs/orpheus-v1-english`, with a pre-synthesised cache |
+| Text-to-speech | Cartesia `sonic-latest`, with a pre-synthesised cache |
 | Backend | FastAPI + Pydantic v2 |
 | State | In-memory session store behind a swappable interface |
 | Hosting | Single service — FastAPI serves the built frontend bundle |
 
-One vendor for STT, LLM and TTS means **one API key**, held server-side only. No
-credential ever reaches the browser.
+Two vendors, two keys (Groq for STT + the LLM, Cartesia for TTS — see
+MASTER_PLAN.md for why TTS moved off Groq's own Orpheus), both **held
+server-side only**. No credential ever reaches the browser.
 
 ## Repository layout
 
@@ -131,20 +132,23 @@ All configuration lives in [`.env.example`](.env.example) — copy it to `.env` 
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GROQ_API_KEY` | **Yes** | — | Single key for speech-to-text, the LLM and text-to-speech. Get one at [console.groq.com/keys](https://console.groq.com/keys). |
+| `GROQ_API_KEY` | **Yes** | — | Speech-to-text and the LLM. Get one at [console.groq.com/keys](https://console.groq.com/keys). |
+| `CARTESIA_API_KEY` | **Yes** | — | Text-to-speech. Get one (free, no card) at [play.cartesia.ai/keys](https://play.cartesia.ai/keys). Missing this degrades to the browser's own `speechSynthesis` rather than failing the turn. |
 | `GROQ_LLM_MODEL` | No | `openai/gpt-oss-120b` | Extraction model |
 | `GROQ_STT_MODEL` | No | `whisper-large-v3-turbo` | Speech-to-text |
-| `GROQ_TTS_MODEL` | No | `canopylabs/orpheus-v1-english` | Text-to-speech |
-| `GROQ_TTS_VOICE` | No | `hannah` | Orpheus voice |
+| `CARTESIA_TTS_MODEL` | No | `sonic-latest` | Text-to-speech |
+| `CARTESIA_TTS_VOICE_ID` | No | `db6b0ed5-d5d3-463d-ae85-518a07d3c2b4` ("Skylar") | Cartesia voice |
 | `SESSION_TTL_SECONDS` | No | `3600` | Idle session expiry |
 | `MAX_CLARIFY_ATTEMPTS` | No | `2` | Clarifications per field before an assumption is recorded |
 
-The key is read server-side only. The browser never calls a vendor API, so no
+Both keys are read server-side only. The browser never calls a vendor API, so no
 credential is ever shipped to the client.
 
-The app **starts without a key** — the deterministic core and its test suite run with no
-network access at all. `/api/health` reports whether a key is configured, without
-revealing it.
+The app **starts without either key** — the deterministic core and its test suite run
+with no network access at all, and a missing `CARTESIA_API_KEY` specifically degrades to
+the browser's own speech synthesis rather than blocking anything. `/api/health` reports
+whether each key is configured (`llm_configured`, `tts_configured`), without revealing
+either one.
 
 ## Running locally
 

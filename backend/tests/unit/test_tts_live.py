@@ -1,102 +1,127 @@
-"""Live proof of Groq Orpheus TTS -- MASTER_PLAN.md step 3.2.
+"""Live proof of Cartesia TTS -- MASTER_PLAN.md, TTS provider switch.
 
-Marked `llm`: makes a real network call. Excluded from a plain `pytest` run;
-skipped automatically if no key is configured. Run sparingly, not on every
-change: this project's free-tier Orpheus quota is a tight *daily* token
-budget (TPD), not just a per-dollar cost -- a live sweep during this step's
-own development used a meaningful fraction of a day's allowance with only a
-few thousand characters of test input, and once the daily cap is hit the
-account is locked out for hours regardless of dollar cost. See
-services/tts.py's module docstring and MASTER_PLAN.md's risk register.
+Marked `llm`: makes a real network call (billed against Cartesia's free-tier
+character budget, not Groq's). Excluded from a plain `pytest` run; skipped
+automatically if no key is configured.
 
-Requires one manual, one-time step this test cannot do for you: an org
-admin must accept Orpheus's model terms at
-https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english
--- discovered live while building services/tts.py, where every call
-(different lengths, different formats, an invalid voice) failed identically
-with a 400 `model_terms_required` until that happens. Every test below
-routes its call through `_speak()`, which detects that specific error and
-skips with a clear message instead of failing in a confusing way that looks
-like a code bug.
+Confirms the exact contract services/tts.py depends on, verified live before
+trusting it (not assumed from docs): the REST shape (POST /tts/bytes,
+Cartesia-Version header, a bare voice-id string), and the WAV output's own
+quirk -- Cartesia's response uses the streaming convention of an
+unknown-length sentinel (0xFFFFFFFF) in both the RIFF and data chunk size
+fields rather than the real byte count. That was confirmed to still play
+correctly in a real browser `<audio>` element (frontend/src/audio.ts's exact
+mechanism) when this was first discovered; this test keeps the underlying
+claim -- a valid, parseable RIFF/WAVE container despite the sentinel -- as a
+permanent regression check so a future Cartesia change that broke it would
+be caught by the suite, not discovered mid-demo.
 """
 
-import groq
+import struct
+
+import httpx
 import pytest
-from groq import Groq
 
 from app.config import get_settings
-from app.services.tts import _MAX_CHARS
 
 _settings = get_settings()
 
 pytestmark = [
     pytest.mark.llm,
     pytest.mark.skipif(
-        not _settings.is_configured,
-        reason="GROQ_API_KEY not configured -- see .env.example",
+        not _settings.cartesia_is_configured,
+        reason="CARTESIA_API_KEY not configured -- see .env.example",
     ),
 ]
 
-_TERMS_URL = "https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english"
+_API_VERSION = "2026-08-14"
 
 
-def _is_terms_required(err: groq.BadRequestError) -> bool:
-    body = err.body
-    return isinstance(body, dict) and body.get("error", {}).get("code") == "model_terms_required"
+def _client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url="https://api.cartesia.ai",
+        headers={
+            "Authorization": f"Bearer {_settings.cartesia_api_key}",
+            "Cartesia-Version": _API_VERSION,
+        },
+    )
 
 
-def _speak(client: Groq, text: str, **kwargs):
-    # response_format has no server-side default that Orpheus itself accepts
-    # (discovered by this test file initially omitting it: every call failed
-    # with "response_format must be one of [wav]", not the error each test
-    # actually meant to provoke) -- always pass it explicitly, exactly like
-    # services/tts.py's own _synthesize_chunk does.
-    kwargs.setdefault("response_format", "wav")
-    try:
-        return client.audio.speech.create(
-            model=_settings.groq_tts_model,
-            voice=_settings.groq_tts_voice,
-            input=text,
-            **kwargs,
+async def _speak(text: str) -> httpx.Response:
+    async with _client() as client:
+        response = await client.post(
+            "/tts/bytes",
+            json={
+                "model_id": _settings.cartesia_tts_model,
+                "transcript": text,
+                "voice": _settings.cartesia_tts_voice_id,
+                "language": "en",
+                "output_format": {
+                    "container": "wav",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": 44100,
+                },
+            },
         )
-    except groq.BadRequestError as err:
-        if _is_terms_required(err):
-            pytest.skip(
-                f"Orpheus model terms not accepted for this Groq org -- visit {_TERMS_URL} "
-                "and accept them, then re-run with -m llm."
-            )
-        raise
+        response.raise_for_status()
+        return response
 
 
-def test_synthesizing_a_short_response_returns_playable_wav_audio():
-    client = Groq(api_key=_settings.groq_api_key)
-    response = _speak(client, "Got it, Koramangala to Whitefield.")
-    content = response.read()
+async def test_synthesizing_a_short_response_returns_playable_wav_audio():
+    response = await _speak("Got it, Koramangala to Whitefield.")
+    content = response.content
     print(f"\n{len(content)} bytes returned")
     assert content[:4] == b"RIFF", "response is not a WAV file (missing RIFF header)"
+    assert content[8:12] == b"WAVE"
     assert len(content) > 100
 
 
-def test_the_configured_voice_is_accepted():
-    """settings.groq_tts_voice ("hannah") must be a voice Orpheus actually
-    recognises, not just a plausible-looking guess copied into config.py
-    before this step existed."""
-    client = Groq(api_key=_settings.groq_api_key)
-    _speak(client, "Testing the configured voice.")  # must not raise
+async def test_the_configured_voice_and_model_are_accepted():
+    """settings.cartesia_tts_voice_id must be a voice Cartesia actually
+    recognises, not just a plausible-looking UUID copied into config.py
+    before this was ever tested live."""
+    await _speak("Testing the configured voice.")  # must not raise
 
 
-def test_a_chunk_at_our_own_configured_max_length_is_accepted():
+async def test_a_chunk_at_our_own_configured_max_length_is_accepted():
     """_MAX_CHARS is a self-imposed chunk size, not an API-enforced one (see
     services/tts.py's module docstring) -- this just confirms our own chosen
-    ceiling actually round-trips correctly, not that Orpheus would reject
-    anything longer. A live sweep during this step's development found no
-    length-based rejection at all up to 1000 characters; the real wall was
-    the account's daily token budget, not a per-request size check."""
+    ceiling actually round-trips correctly."""
+    from app.services.tts import _MAX_CHARS
+
     text = (
         "This is a padded test sentence used only to reach exactly the "
         "configured maximum chunk length for a live check here today, ok"
     )
     text = (text + " " + "x" * _MAX_CHARS)[:_MAX_CHARS]
     assert len(text) == _MAX_CHARS
-    client = Groq(api_key=_settings.groq_api_key)
-    _speak(client, text)  # must not raise
+    await _speak(text)  # must not raise
+
+
+async def test_wav_output_uses_a_streaming_length_sentinel_not_the_real_size():
+    """Documents and permanently guards the exact quirk services/tts.py's
+    module docstring describes: both the RIFF and data chunk declared sizes
+    are 0xFFFFFFFF (unknown/streaming length), not the real byte count. A
+    naive fixed-offset parser breaks on this (there is also an extra LIST
+    metadata chunk between fmt and data) -- proper chunk-walking, which is
+    what actually matters here, does not. If Cartesia ever starts sending a
+    real length, that is a welcome change and this assertion should be
+    relaxed then, not a sign this test is wrong now."""
+    response = await _speak("Hi.")
+    content = response.content
+    riff_declared_size = struct.unpack("<I", content[4:8])[0]
+    assert riff_declared_size == 0xFFFFFFFF
+
+    pos = 12
+    found_data_chunk = False
+    while pos + 8 <= len(content):
+        chunk_id = content[pos : pos + 4]
+        chunk_size = struct.unpack("<I", content[pos + 4 : pos + 8])[0]
+        if chunk_id == b"data":
+            found_data_chunk = True
+            assert chunk_size == 0xFFFFFFFF
+            actual_remaining = len(content) - (pos + 8)
+            assert actual_remaining > 0, "data chunk header present but no audio bytes followed"
+            break
+        pos += 8 + chunk_size + (chunk_size % 2)  # chunks are word-aligned
+    assert found_data_chunk, "no data chunk found -- chunk-walking logic or format itself changed"

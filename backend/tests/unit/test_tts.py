@@ -1,28 +1,31 @@
 """Chunking, the retry/fallback client, and the on-disk cache --
-MASTER_PLAN.md step 3.2.
+MASTER_PLAN.md step 3.2, moved to Cartesia in a later pass.
 
 `chunk_text` is pure and gets exhaustive coverage with no mocking at all,
 the same approach as test_stt.py's `is_noise`. The client and cache use a
-mocked AsyncGroq plus pytest's `tmp_path` for real (but disposable) file
-I/O -- the live proof that Groq's speech endpoint actually behaves this way
-is test_tts_live.py.
+mocked httpx.AsyncClient plus pytest's `tmp_path` for real (but disposable)
+file I/O -- the live proof that Cartesia's REST endpoint actually behaves
+this way is test_tts_live.py. Real httpx.Response objects are used for the
+mocked responses rather than a loose Mock, specifically so `.raise_for_
+status()` exercises httpx's own real 4xx/5xx behaviour instead of a
+hand-rolled stand-in that could silently drift from it.
 """
 
 import asyncio
 import time
 from unittest.mock import AsyncMock
 
-import groq
 import httpx
 import pytest
 
 from app.services.tts import _MAX_CHARS, chunk_text, synthesize
 
 
-def _rate_limit_error(headers: dict[str, str]) -> groq.RateLimitError:
-    request = httpx.Request("POST", "https://api.groq.com/x")
-    response = httpx.Response(429, headers=headers, request=request)
-    return groq.RateLimitError("rate limited", response=response, body=None)
+def _response(
+    status_code: int, *, content: bytes = b"", headers: dict | None = None
+) -> httpx.Response:
+    request = httpx.Request("POST", "https://api.cartesia.ai/tts/bytes")
+    return httpx.Response(status_code, content=content, headers=headers or {}, request=request)
 
 
 # --- chunk_text ---------------------------------------------------------
@@ -78,24 +81,37 @@ def test_reassembling_all_chunks_reproduces_the_sentences():
 
 
 def _mock_client(*, side_effects) -> AsyncMock:
+    """A fake httpx.AsyncClient whose post() yields side_effects in order --
+    each entry is either raw WAV bytes (a 200 success), a real httpx.Response
+    (for a specific status/headers, e.g. 429 or 400), or an Exception
+    instance (a connection-level failure) to raise for that call."""
     client = AsyncMock()
 
-    async def create(**_kwargs):
+    async def post(*_args, **_kwargs):
         effect = side_effects.pop(0)
         if isinstance(effect, Exception):
             raise effect
-        response = AsyncMock()
-        response.read = AsyncMock(return_value=effect)
-        return response
+        if isinstance(effect, httpx.Response):
+            return effect
+        return _response(200, content=effect)
 
-    client.audio.speech.create = create
+    client.post = post
     return client
 
 
 async def test_synthesize_returns_one_chunk_of_audio_for_short_text(tmp_path):
     client = _mock_client(side_effects=[b"wav-bytes"])
-    result = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    result = await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
     assert result == [b"wav-bytes"]
+
+
+async def test_synthesize_returns_none_immediately_when_client_is_none(tmp_path):
+    """The contract get_cartesia_client/synthesize rely on when
+    CARTESIA_API_KEY is not configured -- no attempt made at all, not an
+    error, matching what an absent key should mean: fall back to
+    speechSynthesis, don't break the turn."""
+    result = await synthesize(None, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
+    assert result is None
 
 
 async def test_synthesize_returns_one_audio_chunk_per_text_chunk(tmp_path):
@@ -103,7 +119,7 @@ async def test_synthesize_returns_one_audio_chunk_per_text_chunk(tmp_path):
     text = sentence * 10
     expected_chunks = chunk_text(text)
     client = _mock_client(side_effects=[f"audio-{i}".encode() for i in range(len(expected_chunks))])
-    result = await synthesize(client, model="m", voice="hannah", text=text, cache_dir=tmp_path)
+    result = await synthesize(client, model="m", voice_id="v1", text=text, cache_dir=tmp_path)
     assert len(result) == len(expected_chunks)
 
 
@@ -121,17 +137,15 @@ async def test_multiple_chunks_are_synthesized_concurrently_not_sequentially(tmp
     expected_chunks = chunk_text(text)
     assert len(expected_chunks) >= 3  # sanity check: the setup actually exercises concurrency
 
-    async def create(**_kwargs):
+    async def post(*_args, **_kwargs):
         await asyncio.sleep(delay)
-        response = AsyncMock()
-        response.read = AsyncMock(return_value=b"audio-chunk")
-        return response
+        return _response(200, content=b"audio-chunk")
 
     client = AsyncMock()
-    client.audio.speech.create = create
+    client.post = post
 
     start = time.monotonic()
-    result = await synthesize(client, model="m", voice="hannah", text=text, cache_dir=tmp_path)
+    result = await synthesize(client, model="m", voice_id="v1", text=text, cache_dir=tmp_path)
     elapsed = time.monotonic() - start
 
     assert len(result) == len(expected_chunks)
@@ -143,71 +157,69 @@ async def test_multiple_chunks_are_synthesized_concurrently_not_sequentially(tmp
 
 
 async def test_synthesize_retries_once_after_a_connection_error_then_succeeds(tmp_path):
-    client = _mock_client(side_effects=[groq.APIConnectionError(request=AsyncMock()), b"wav-bytes"])
-    result = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    client = _mock_client(side_effects=[httpx.ConnectError("boom"), b"wav-bytes"])
+    result = await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
     assert result == [b"wav-bytes"]
 
 
 async def test_synthesize_returns_none_after_the_retry_budget_is_exhausted(tmp_path):
-    err = groq.APIConnectionError(request=AsyncMock())
+    err = httpx.ConnectError("boom")
     client = _mock_client(side_effects=[err, err])
-    result = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    result = await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
     assert result is None
 
 
-async def test_synthesize_does_not_retry_a_bad_request_error(tmp_path):
-    """Same reasoning as services/stt.py: a 400 here (bad voice, terms not
-    accepted, text over the limit) is structural, verified live against the
-    real API -- it must propagate immediately, not be retried or swallowed."""
-    err = groq.BadRequestError("bad voice", response=AsyncMock(status_code=400), body=None)
-    client = _mock_client(side_effects=[err])
-    with pytest.raises(groq.BadRequestError):
-        await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+async def test_synthesize_does_not_retry_a_structural_bad_request(tmp_path):
+    """Same reasoning as services/stt.py: a 4xx here (bad voice/model id, a
+    malformed request) means something structurally wrong that an identical
+    retry cannot fix -- it must propagate immediately, not be retried or
+    swallowed."""
+    client = _mock_client(side_effects=[_response(400, content=b'{"error":"bad voice"}')])
+    with pytest.raises(httpx.HTTPStatusError):
+        await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
 
 
 async def test_a_non_retriable_error_propagates_instead_of_being_swallowed(tmp_path):
-    client = _mock_client(
-        side_effects=[
-            groq.AuthenticationError("bad key", response=AsyncMock(status_code=401), body=None)
-        ]
-    )
-    with pytest.raises(groq.AuthenticationError):
-        await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    client = _mock_client(side_effects=[_response(401, content=b'{"error":"bad key"}')])
+    with pytest.raises(httpx.HTTPStatusError):
+        await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
 
 
 async def test_synthesize_waits_out_a_short_rate_limit_then_succeeds(tmp_path):
-    client = _mock_client(side_effects=[_rate_limit_error({"retry-after": "0.01"}), b"wav-bytes"])
-    result = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    client = _mock_client(
+        side_effects=[_response(429, headers={"retry-after": "0.01"}), b"wav-bytes"]
+    )
+    result = await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
     assert result == [b"wav-bytes"]
 
 
 async def test_synthesize_gives_up_immediately_on_a_long_rate_limit_wait(tmp_path):
     """No second attempt at all -- only one side_effect is provided, so a
     wrongly-attempted retry would IndexError instead of quietly passing."""
-    client = _mock_client(side_effects=[_rate_limit_error({"retry-after": "999"})])
-    result = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    client = _mock_client(side_effects=[_response(429, headers={"retry-after": "999"})])
+    result = await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
     assert result is None
 
 
 async def test_a_repeated_phrase_is_served_from_cache_with_no_second_api_call(tmp_path):
     # Only one side effect: a second real API call would IndexError.
     client = _mock_client(side_effects=[b"wav-bytes"])
-    first = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
-    second = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    first = await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
+    second = await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
     assert first == second == [b"wav-bytes"]
 
 
-async def test_a_different_voice_is_not_served_from_the_other_voices_cache_entry(tmp_path):
-    client = _mock_client(side_effects=[b"hannah-audio", b"daniel-audio"])
-    hannah = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
-    daniel = await synthesize(client, model="m", voice="daniel", text="Got it.", cache_dir=tmp_path)
-    assert hannah == [b"hannah-audio"]
-    assert daniel == [b"daniel-audio"]
+async def test_a_different_voice_id_is_not_served_from_the_other_ones_cache_entry(tmp_path):
+    client = _mock_client(side_effects=[b"voice-a-audio", b"voice-b-audio"])
+    a = await synthesize(client, model="m", voice_id="voice-a", text="Got it.", cache_dir=tmp_path)
+    b = await synthesize(client, model="m", voice_id="voice-b", text="Got it.", cache_dir=tmp_path)
+    assert a == [b"voice-a-audio"]
+    assert b == [b"voice-b-audio"]
 
 
 async def test_cache_is_written_to_disk_as_wav_files(tmp_path):
     client = _mock_client(side_effects=[b"wav-bytes"])
-    await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    await synthesize(client, model="m", voice_id="v1", text="Got it.", cache_dir=tmp_path)
     cached_files = list(tmp_path.glob("*.wav"))
     assert len(cached_files) == 1
     assert cached_files[0].read_bytes() == b"wav-bytes"

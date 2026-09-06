@@ -178,7 +178,7 @@ async def extract(
         try:
             content = await _call(client, model, messages)
         except groq.RateLimitError as err:
-            wait = retry_after_seconds(err)
+            wait = retry_after_seconds(err.response)
             if wait is None:
                 log.warning(
                     "extractor rate-limited (attempt %d), no short retry-after: %s",

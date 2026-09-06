@@ -15,6 +15,17 @@ all replace the SDK's generic retry with their own domain-aware "one retry, then
 safe fallback" shape, so the SDK's internal retry (and its handling of this header)
 never runs.
 
+Takes a plain `httpx.Response`, not a Groq-specific exception type -- `groq.
+RateLimitError.response` already *is* an httpx.Response under the hood (confirmed
+when this module was first written), and services/tts.py's switch to Cartesia
+(MASTER_PLAN.md) needed the identical header-parsing logic for a second, unrelated
+provider's 429. Cartesia's own exact 429 header behaviour was not independently
+confirmed live -- their rate-limit docs page requires an authenticated login this
+project has no reason to have -- but that is not a gap this function has to assume
+past: it only ever *opportunistically* uses Retry-After when a response actually
+carries it, and safely skips the retry (the same conservative default) when it
+does not, for Cartesia exactly as it already did for any Groq response missing it.
+
 `max_wait` defaults to a small fraction of that 60-second SDK default: these calls sit
 inside a single voice turn against a ~2-3s *total* latency budget across STT, the LLM
 and TTS combined (docs/architecture.md), not a batch job where waiting a couple of
@@ -28,21 +39,22 @@ would blow the turn's latency budget on its own.
 
 from __future__ import annotations
 
-import groq
+import httpx
 
 _DEFAULT_MAX_WAIT_SECONDS = 1.0
 
 
 def retry_after_seconds(
-    err: groq.RateLimitError, *, max_wait: float = _DEFAULT_MAX_WAIT_SECONDS
+    response: httpx.Response, *, max_wait: float = _DEFAULT_MAX_WAIT_SECONDS
 ) -> float | None:
-    """How long to wait before retrying `err`, or None to skip the retry entirely.
+    """How long to wait before retrying the request that produced `response`, or
+    None to skip the retry entirely.
 
     None covers three cases alike, all with the same answer -- do not retry: the
     response carried neither header, the header did not parse as a number, or the
     wait it named is longer than `max_wait` is willing to spend on a single retry.
     """
-    headers = err.response.headers
+    headers = response.headers
     seconds = _parse_seconds(headers.get("retry-after-ms"), scale=1 / 1000)
     if seconds is None:
         seconds = _parse_seconds(headers.get("retry-after"), scale=1.0)

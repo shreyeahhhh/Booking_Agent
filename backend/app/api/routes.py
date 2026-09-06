@@ -10,6 +10,7 @@ import base64
 from dataclasses import dataclass, replace
 
 import groq
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from groq import AsyncGroq
 from pydantic import BaseModel
@@ -29,27 +30,36 @@ class HealthResponse(BaseModel):
     status: str
     llm_configured: bool
     llm_model: str
+    tts_configured: bool
 
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """Liveness plus a configuration hint.
 
-    Reports whether a Groq key is present without ever revealing it, which makes
-    "is the deployment actually wired up?" answerable from a browser.
+    Reports whether each key is present without ever revealing it, which makes
+    "is the deployment actually wired up?" answerable from a browser -- for both
+    credentials this app now holds, not just Groq's. `tts_configured: false` is
+    not a broken deploy the way `llm_configured: false` would be: the browser
+    speechSynthesis fallback already covers it, just with a more robotic voice.
     """
     settings = get_settings()
     return HealthResponse(
         status="ok",
         llm_configured=settings.is_configured,
         llm_model=settings.groq_llm_model,
+        tts_configured=settings.cartesia_is_configured,
     )
 
 
 # --------------------------------------------------------------------------
-# The Groq client -- one per process (app/main.py's lifespan), not one per
-# request. This dependency just fetches it and turns "not configured" into a
-# clear, specific error instead of an AttributeError three calls deep.
+# The Groq and Cartesia clients -- one each per process (app/main.py's
+# lifespan), not one per request. get_groq_client turns "not configured" into
+# a clear, specific error instead of an AttributeError three calls deep, since
+# Groq (STT + the LLM) is core to every turn. get_cartesia_client never
+# raises: an absent Cartesia key degrades a turn's *voice*, not its
+# correctness, so services/tts.synthesize() is the layer that decides what a
+# None client means, not this dependency.
 # --------------------------------------------------------------------------
 
 
@@ -61,6 +71,10 @@ def get_groq_client(request: Request) -> AsyncGroq:
             detail="GROQ_API_KEY is not configured -- speech and extraction are unavailable.",
         )
     return client
+
+
+def get_cartesia_client(request: Request) -> httpx.AsyncClient | None:
+    return request.app.state.cartesia_client
 
 
 # --------------------------------------------------------------------------
@@ -78,12 +92,13 @@ class SessionResponse(BaseModel):
 @router.post("/session", response_model=SessionResponse)
 async def create_session(
     client: AsyncGroq = Depends(get_groq_client),  # noqa: B008 -- FastAPI's own DI idiom
+    cartesia_client: httpx.AsyncClient | None = Depends(get_cartesia_client),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> SessionResponse:
     session_id, session = store.create(ttl_seconds=settings.session_ttl_seconds)
     store.save(session_id, replace(session, last_question=templates.GREETING))
 
-    audio_chunks = await _synthesize(client, settings, templates.GREETING)
+    audio_chunks = await _synthesize(cartesia_client, settings, templates.GREETING)
     return SessionResponse(
         session_id=session_id,
         agent_text=templates.GREETING,
@@ -112,6 +127,7 @@ async def turn(
     session_id: str = Form(...),  # noqa: B008
     audio: UploadFile = File(...),  # noqa: B008
     client: AsyncGroq = Depends(get_groq_client),  # noqa: B008
+    cartesia_client: httpx.AsyncClient | None = Depends(get_cartesia_client),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> TurnResponse:
     session = store.get(session_id, ttl_seconds=settings.session_ttl_seconds)
@@ -123,7 +139,7 @@ async def turn(
 
     audio_bytes = await audio.read()
     filename = audio.filename or "audio.webm"
-    outcome = await _process_turn(client, settings, session, audio_bytes, filename)
+    outcome = await _process_turn(client, cartesia_client, settings, session, audio_bytes, filename)
     store.save(session_id, outcome.session)
 
     booking = outcome.session.conversation.booking
@@ -153,11 +169,13 @@ class _TurnOutcome:
     audio_chunks: list[bytes] | None
 
 
-async def _synthesize(client: AsyncGroq, settings: Settings, text: str) -> list[bytes] | None:
+async def _synthesize(
+    cartesia_client: httpx.AsyncClient | None, settings: Settings, text: str
+) -> list[bytes] | None:
     return await tts.synthesize(
-        client,
-        model=settings.groq_tts_model,
-        voice=settings.groq_tts_voice,
+        cartesia_client,
+        model=settings.cartesia_tts_model,
+        voice_id=settings.cartesia_tts_voice_id,
         text=text,
         cache_dir=settings.tts_cache_dir,
     )
@@ -176,6 +194,7 @@ def _noise_reprompt(last_question: str | None) -> str:
 
 async def _process_turn(
     client: AsyncGroq,
+    cartesia_client: httpx.AsyncClient | None,
     settings: Settings,
     session: Session,
     audio_bytes: bytes,
@@ -207,7 +226,7 @@ async def _process_turn(
         # again. See services/stt.py and docs/architecture.md's "When the
         # LLM is NOT called".
         agent_text = _noise_reprompt(session.last_question)
-        audio_chunks = await _synthesize(client, settings, agent_text)
+        audio_chunks = await _synthesize(cartesia_client, settings, agent_text)
         return _TurnOutcome(session, text or "", agent_text, audio_chunks)
 
     fp_result = fastpath.classify(text, phase=session.conversation.phase, decision=session.decision)
@@ -215,13 +234,13 @@ async def _process_turn(
     if fp_result is not None and fp_result.meta_command == MetaCommand.REPEAT:
         # Also no state change: replay exactly what was last said, verbatim.
         agent_text = session.last_question or templates.GREETING
-        audio_chunks = await _synthesize(client, settings, agent_text)
+        audio_chunks = await _synthesize(cartesia_client, settings, agent_text)
         return _TurnOutcome(session, text, agent_text, audio_chunks)
 
     if fp_result is not None and fp_result.meta_command == MetaCommand.RESTART:
         fresh = Session(conversation=machine.start())
         session = replace(fresh, last_question=templates.GREETING)
-        audio_chunks = await _synthesize(client, settings, templates.GREETING)
+        audio_chunks = await _synthesize(cartesia_client, settings, templates.GREETING)
         return _TurnOutcome(session, text, templates.GREETING, audio_chunks)
 
     if fp_result is not None and fp_result.extraction is not None:
@@ -251,5 +270,5 @@ async def _process_turn(
         last_question=outcome.response_text,
         recent_turns=turns[-orchestrator.MAX_RECENT_TURNS :],
     )
-    audio_chunks = await _synthesize(client, settings, outcome.response_text)
+    audio_chunks = await _synthesize(cartesia_client, settings, outcome.response_text)
     return _TurnOutcome(session, text, outcome.response_text, audio_chunks)
