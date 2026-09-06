@@ -117,7 +117,12 @@ What automation cannot catch. Run before submission, and after any VAD or TTS ch
 - [ ] Summary readback is not tediously long when spoken
 - [ ] Turn latency feels conversational (target under ~2.5s)
 - [ ] Fast-path turns feel instant
-- [ ] Works in Chrome; degrades acceptably elsewhere
+- [ ] Works in Chrome; degrades acceptably elsewhere -- and the tested browser is stated in
+      the README (6.2), not left for a reviewer to guess
 - [ ] Works on the deployed HTTPS origin, not just localhost
 - [ ] Behaves sanely with no speech at all (silence, background noise)
 - [ ] Behaves sanely when the network drops mid-turn
+- [ ] `/api/health` on the *deployed* URL reports `llm_configured: true` -- confirms every
+      env var actually made it into the hosting platform's dashboard, not just the local `.env`
+- [ ] STT/LLM/TTS quota has headroom for several evaluators' worth of real conversations
+      during the review window, not just the usage a solo developer generated while building

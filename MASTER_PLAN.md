@@ -561,14 +561,30 @@ was actually found.
 
 | # | Step | Acceptance |
 |---|---|---|
-| 4.1 | Single-service deploy (FastAPI serves the built frontend bundle) | Public HTTPS URL loads the app |
-| 4.2 | Microphone works on the deployed origin | Verified in a fresh browser profile |
+| 4.1 | Single-service deploy (FastAPI serves the built frontend bundle) | Public HTTPS URL loads the app; `GROQ_API_KEY` and every other `.env.example` variable set on the **hosting platform's own dashboard**, not only in a local `.env` -- confirmed by `/api/health` reporting `llm_configured: true` on the deployed URL itself, not just locally |
+| 4.2 | Microphone works on the deployed origin | Verified in a fresh browser profile, over the deployed HTTPS URL (`getUserMedia` is blocked on plain HTTP everywhere except `localhost`, so this can only be genuinely verified post-deploy, not in local dev) |
 | 4.3 | Cold-start mitigation | Either a warm instance or an explicit "waking up" UI state |
 | 4.4 | Error handling pass | Every external call has a timeout, a retry and a spoken degraded fallback |
 | 4.5 | Session TTL sweep | Memory does not grow unbounded |
 
 **Acceptance:** a link that a stranger can open and complete a booking through, and that
 degrades gracefully when STT, the LLM or TTS fails.
+
+**Deliberately not a checklist item, because it is already structurally impossible to get
+wrong: CORS.** README.md already states this plainly -- the Vite dev server proxies `/api` to
+the backend in development, and FastAPI serves the built frontend bundle from the same origin
+in production (`app/main.py`'s own docstring), so the browser never makes a cross-origin
+request in either environment. There is no CORS middleware anywhere in this codebase because
+there is nothing for it to do. This only stays true as long as the single-service deploy
+shape in 4.1 does: **if a future deploy ever splits the frontend and backend across two
+different hosts** (a separate Vercel frontend and Render backend, say), that reintroduces
+cross-origin requests and `fastapi.middleware.cors.CORSMiddleware` becomes necessary again --
+worth remembering precisely because the current plan makes it easy to forget the problem
+exists at all. The same single-origin shape is also why the frontend (3.5/3.6) must call the
+API by **relative path** (`/api/turn`, `/api/session`), never a hardcoded
+`http://localhost:8000` -- a relative URL is also what makes the mic-permission HTTPS
+requirement (4.2) automatic rather than something to remember: it inherits the page's own
+origin and protocol for free.
 
 ---
 
@@ -590,7 +606,7 @@ degrades gracefully when STT, the LLM or TTS fails.
 | # | Step | Acceptance |
 |---|---|---|
 | 6.1 | README: setup, env vars, run, deploy, live URL | A stranger can run it locally from the README alone |
-| 6.2 | README: assumptions and limitations | Explicitly required by the brief |
+| 6.2 | README: assumptions and limitations | Explicitly required by the brief. Must state plainly which browser was tested (test-plan.md's manual checklist requires Chrome) and whether others were even tried -- an evaluator has no reason to think to switch browsers unless told. |
 | 6.3 | Architecture section with diagram | The "LLM as sensor" thesis stated up front |
 | 6.4 | 2-3 minute demo video, linked in the README | Insurance if the deploy hiccups during review |
 | 6.5 | Repository tidy | No dead code, no stray scratch files, clean log |
@@ -601,9 +617,10 @@ degrades gracefully when STT, the LLM or TTS fails.
 
 | # | Step |
 |---|---|
-| 7.1 | Test on a browser and machine that are not yours |
+| 7.1 | Test on a browser and machine that are not yours -- the deployed HTTPS URL, mic permissions from a fresh profile, cold start included |
 | 7.2 | Re-read the brief; tick every stated expectation |
-| 7.3 | Send the submission email **in the morning** |
+| 7.3 | Confirm every `.env.example` variable is set on the hosting platform's own dashboard (`/api/health` on the live URL, not localhost) and that STT/LLM/TTS quota has headroom for several evaluators each running a few real conversations, not just the single-developer usage the free tier was tested against |
+| 7.4 | Send the submission email **in the morning** |
 
 ---
 
@@ -613,6 +630,7 @@ degrades gracefully when STT, the LLM or TTS fails.
 |---|---|---|
 | Groq free-tier limits (8k TPM / 200k TPD on the LLM) stall development | High | Add paid credit on Day 1. Whole-week spend is estimated under $5. |
 | **Orpheus TTS has its own, much tighter free-tier limit (3600 TPD)**, separate from the LLM's | High -- confirmed live in step 3.2, already partly consumed by that step's own testing | Synthesise sparingly during development (the audio cache means production usage is far lighter than test sweeps); add paid credit before phase 3's voice UI work needs repeated real synthesis |
+| **Submission-week evaluator load exceeds free-tier quota mid-review** -- several evaluators each running a few 2-3 minute conversations is a realistic multiple of any single tier's daily cap, and the confirmed 3600 TPD Orpheus ceiling above shows this is not hypothetical | High, once the demo link is actually shared | Before sending the submission email (7.4): move all three services (STT, LLM, TTS) to a paid-but-cheap tier for the review window, not just the LLM (this register's own "under $5" estimate above was a development-week estimate, not a multi-evaluator one). The response-template audio cache (3.2) means repeat phrases cost nothing after the first evaluator, which helps but does not eliminate the risk for the necessarily-unique parts of every conversation (localities, items). |
 | Cold start makes the demo look broken | High | Warm instance or explicit UI state (4.3) |
 | A rate-limit retry can't help if the limit is a daily quota, not a short one | Medium -- confirmed live in step 3.2 (a `RateLimitError` said "try again in 5h40m0s"; one immediate no-backoff retry cannot address that) | Flagged for phase 4.4's cross-cutting error-handling pass, not fixed piecemeal in one module |
 | A long spoken summary is tedious to listen to (not an Orpheus input-length problem -- step 3.2 found there is no enforced cap -- but a genuine UX one) | Medium | Sentence chunking for streamed playback; fall back to displaying the full written summary while speaking a condensed one |
@@ -620,6 +638,8 @@ degrades gracefully when STT, the LLM or TTS fails.
 | STT mangles Indian place names | Medium | Keep `raw_text` verbatim alongside the normalised locality; never discard what was heard |
 | Strict JSON schema rejected by Groq | Medium | Resolved in 2.1 before anything depends on it |
 | Templates sound robotic | Medium | Acknowledgment composition + variant rotation + `suggested_reply` escape hatch |
+| Evaluator's browser is not Chrome -- `MediaRecorder`/mic support is partial or different on Safari and Firefox, and an evaluator has no reason to think to switch | Medium | Test explicitly on Chrome (test-plan.md's manual checklist already says so); state the tested browser plainly in the README (6.2) rather than silently assuming a reviewer already knows, and note whether other browsers were tried at all |
+| A deployed key/setting works locally but not on the host -- an env var set in the local `.env` was never set on the hosting platform's own dashboard, the single most common way a deployed demo silently fails | Medium | `/api/health`'s `llm_configured` field exists precisely to make this checkable on the live URL itself (4.1); check it immediately after every deploy, not just once |
 | Scope creep | High | This document. Anything not listed here is out of scope. |
 
 ---
