@@ -72,6 +72,7 @@ def advance(
     extraction: ExtractionResult,
     *,
     reference: datetime | None = None,
+    max_clarify_attempts: int = policy.DEFAULT_MAX_CLARIFY_ATTEMPTS,
 ) -> TurnResult:
     """Process one turn and return the resulting conversation state.
 
@@ -80,6 +81,15 @@ def advance(
     `extraction` in hand (it is what it passed in), so no extra plumbing is
     needed here just to make that value visible further up the call stack.
     This function only ever decides what *state* results from a turn.
+
+    `max_clarify_attempts` exists so a caller with access to configuration
+    (api/routes.py, from `settings.max_clarify_attempts`) can actually
+    change the bounded-clarification threshold -- until step 3.4 wired this
+    parameter through, `settings.max_clarify_attempts` was defined but read
+    by nothing, the same orphaned-config shape step 2.2 found for
+    `booking_type` and `schedule.is_asap`. Defaults to
+    `policy.DEFAULT_MAX_CLARIFY_ATTEMPTS` so every existing caller
+    (tests/repl.py, the phase 1/2 test suites) is unaffected.
     """
     booking = conversation.booking
 
@@ -101,7 +111,7 @@ def advance(
     # remark, or a bare rejection with no specifics yet) -- nothing about
     # the booking changes this turn.
 
-    booking, decision = policy.sweep_and_select(booking)
+    booking, decision = policy.sweep_and_select(booking, max_clarify_attempts=max_clarify_attempts)
 
     if decision is not None and decision.reason == SlotReason.AMBIGUOUS:
         # Record the ask *before* returning, since the decision returned

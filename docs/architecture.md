@@ -121,7 +121,7 @@ One call, one response. No chaining, no agent loop, no reflection pass.
 | **Inferring vehicle type and helper count** | Lookup table over items |
 | **Deciding what is missing / what to ask next** | Completeness engine + policy |
 | **All state transitions** | Guard functions |
-| Bare numeric answer to a numeric slot | Tight regex, gated on expected answer type |
+| Bare number answer to a numeric slot (digit, cardinal or ordinal word) | Gated on expected answer type |
 
 ### Fast paths fail open
 
@@ -139,6 +139,18 @@ Meta-commands ("repeat that", "start over") are a separate, deliberately context
 category and do not need an expected answer type at all — they mean the same thing regardless
 of what was just asked, which is exactly why matching them first, before consulting the
 pending field, is safe.
+
+**The numeric matcher accepts digits, cardinal words and ordinal words, not digits alone.**
+Step 3.3 originally shipped a digit-only regex, reasoned to be the "tight" end of the safety
+spectrum. Step 3.4's integration testing did a fully live, unmocked round trip — Orpheus
+synthesises real speech, Whisper transcribes it back, the real extractor and fast path run
+against whatever came back — and it showed a spoken "3" transcribes as the word "three", and a
+spoken floor answer naturally comes back as "third" or "third floor", essentially never as a
+digit. A digit-only regex is correct for typed input but was close to dead code for real
+speech. `_parse_integer` now also matches a bare cardinal or ordinal word, plus one optional
+trailing unit noun ("floor(s)", "helper(s)") stripped only when it is the *last* word in the
+utterance — so "third floor, but there's no lift" still does not end in "floor" and is
+untouched by the strip, then still fails to reduce to a bare number, exactly as before.
 
 Any miss falls through to the LLM. Correctness is never traded for a saved call —
 "third floor, but there's no lift" must not be swallowed by the numeric matcher.

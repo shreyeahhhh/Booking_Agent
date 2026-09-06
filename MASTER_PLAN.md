@@ -322,8 +322,8 @@ acceptance criterion, live, not simulated.
 | 3.1 | STT service | `services/stt.py` | ✅ Groq `whisper-large-v3-turbo`. Empty/noise transcripts handled without an LLM call. |
 | 3.2 | TTS service + audio cache | `services/tts.py` | ✅ Groq Orpheus. Sentence chunking (a self-imposed 200-char chunk size, not an enforced limit -- see findings below). Cache keyed by text hash. Browser `speechSynthesis` fallback flag. |
 | 3.3 | Fast-path classifier | `conversation/fastpath.py` | ✅ Yes/no, meta-commands, bare numerics. **Fails open to the LLM.** |
-| 3.4 | `/turn` endpoint | `api/routes.py` | Orchestrates STT → fastpath/extract → reduce → policy → template → TTS. |
-| 3.5 | Voice UI | `frontend/src/` | Mic button, VAD silence detection (~700ms), audio playback, transcript. |
+| 3.4 | `/turn` endpoint | `api/routes.py` | ✅ Orchestrates STT → fastpath/extract → reduce → policy → template → TTS. |
+| 3.5 | Voice UI | `frontend/src/` | Mic button, VAD silence detection (~700ms), audio playback, transcript. Calls the API by relative path (`/api/turn`, `/api/session`), never a hardcoded origin -- see Phase 4's CORS/HTTPS note above for why that single choice matters for both. |
 | 3.6 | Live state panel | `frontend/src/` | Fields fill as they are captured; corrections render as `Kakkanad (was: Kochi)`. This is the evidence exhibit for the whole architecture. |
 
 **Acceptance:** a complete booking spoken end to end on localhost, under ~2.5s per turn.
@@ -461,6 +461,97 @@ curated phrase set after normalising case/punctuation/whitespace -- since that a
 guarantees the same safety property (every phrase in the set happens to be <=3 tokens by
 construction) without a redundant separate counting step. docs/architecture.md corrected to
 describe what was actually built.
+
+**Retroactively fixed during step 3.4: the numeric fast-path was close to dead code for real
+speech.** Step 3.3's own tests were entirely mocked/text-driven and never caught this --
+finding it needed the thing step 3.4 uniquely made possible: a fully live, unmocked round
+trip where Orpheus synthesises real speech and Whisper transcribes it back, with the real
+extractor and fast path running on whatever came back. A spoken "3" came back from Whisper as
+the word `"three..."`, not a digit, and a spoken floor answer naturally transcribes as
+`"third"` or `"third floor"` -- essentially never as a numeral. The original digit-only regex
+(`\d+`) is correct for typed input but had almost no real chance of ever firing for actual
+speech, silently defeating a chunk of this step's own point (saving LLM calls on the most
+common follow-up answers: floor number, helper count). Fixed in `fastpath._parse_integer`:
+accepts a bare digit, a bare cardinal word ("three"), or a bare ordinal word ("third"),
+optionally followed by one trailing unit noun ("floor(s)", "helper(s)") stripped only when it
+is the *last* word -- re-verified against the exact adversarial case this could have broken
+(`test_the_trailing_unit_strip_is_anchored_not_a_general_word_removal`: "the floor is third,
+but there's no lift" still correctly declines, since the strip is anchored and "floor" is not
+the last word there). `NUMBER_WORDS` promoted from private to public in `domain/normalizers.py`
+(mirroring `WINDOW_START_HOUR`'s earlier promotion) so fastpath.py reuses the one word list
+instead of hand-typing a second copy. Re-verified live end to end after the fix, with an
+instrumented call counter proving zero LLM calls: a real synthesized "three" now correctly
+sets `pickup.floor = 3` and advances to the next question, where the same phrase originally
+caused the extractor to misattribute "three" as an item-quantity correction instead (a real,
+observed extraction misfire this fix also sidesteps entirely by not needing the LLM for this
+answer at all).
+
+**Step 3.4 is the first step that actually runs every prior piece together in one process,
+and building it this way -- rather than one giant endpoint function -- surfaced its own
+findings before any live call was even made:**
+
+- `conversation/orchestrator.py` is new: the "understand -> advance -> decide what to say"
+  sequence that lived inline in `tests/repl.py` since step 2.7 is now shared between the REPL
+  and `/turn`, extracted rather than duplicated -- the exact drift risk `booking_type` and
+  `schedule.is_asap` already demonstrated once when the same logic existed in only one place
+  and silently went unused elsewhere. `tests/repl.py` still calls the LLM unconditionally on
+  every turn, by design (it exists to exercise extraction quality); `/turn` calls the same
+  shared tail (`finish_turn`) after either a fast-path hit or that same LLM call, whichever
+  applies. Verified the refactor changed nothing observable by re-running a live REPL turn
+  against the real API before building anything else on top of it.
+- `settings.max_clarify_attempts` was defined in `config.py` since phase 0 and read by nothing
+  -- `machine.advance()` never accepted it, so `domain.policy`'s bounded-clarification
+  threshold could never actually be configured, the same orphaned-config shape as
+  `booking_type`/`schedule.is_asap` before step 2.2's fixes. Found by asking "what do I
+  actually pass to `advance()` here?" while wiring the endpoint -- fixed by threading an
+  optional `max_clarify_attempts` parameter through `advance()`, `finish_turn()` and
+  `process_utterance()`, defaulting to `policy.DEFAULT_MAX_CLARIFY_ATTEMPTS` so every existing
+  caller is unaffected.
+- `app/session/store.py` is a plain in-memory `dict`, deliberately -- this is a single-instance
+  demo deployment (README's assumptions and limitations), not a service that needs Redis or a
+  database. `Session` carries the previous turn's `SlotDecision` alongside the conversation, so
+  `fastpath.classify()` on the *next* utterance always has the real pending-question context
+  rather than something reconstructed from rendered text.
+- `get_settings()` was being called directly inside route handlers rather than injected via
+  FastAPI's `Depends`, unlike the Groq client -- meaning a test could override the client but
+  not the TTS cache directory. Refactored to `Depends(get_settings)` for the same reason the
+  client already used DI: so `test_api_turn.py` can point the cache at an isolated `tmp_path`.
+  This was not a hypothetical concern -- it caused a real, confirmed bug in this step's own
+  test suite (next finding).
+- **A shared, real, on-disk TTS cache silently invalidated a test.** The first version of
+  `test_process_turn.py` used the real configured `settings.tts_cache_dir` directly. A test
+  asserting "TTS failure still returns agent_text with no audio" mocked `speech.create` to
+  raise a connection error -- and passed anyway, with real cached bytes from a *different*
+  test that happened to produce the same response text, because `tts.synthesize`'s cache
+  lookup runs before any API call and found a hit on disk left over from another test in the
+  same run. Every test now gets its own `tmp_path`-backed cache dir via a fixture. Caught by
+  the test itself failing once the assertion was tightened enough to notice the wrong bytes
+  coming back -- not found by inspection.
+- **`test_api_turn.py`'s `TestClient(app)` mutates the same module-level `app` object every
+  other test file importing `app.main` also shares** (`test_health.py` included).
+  `app.dependency_overrides` is cleared in a fixture's `finally` block for exactly this reason
+  -- confirmed by running the full suite together, not just this file alone, since an override
+  leaking across files would not necessarily fail the file where it was set.
+
+Two layers of testing, deliberately: `test_process_turn.py` calls the pipeline's private
+`_process_turn` directly with a mocked three-API client (STT/LLM/TTS call counters, so a test
+can assert not just the right output but that the right APIs were even touched -- e.g. a noise
+transcript truly never reaches the LLM). `test_api_turn.py` separately proves the FastAPI
+wiring itself -- multipart parsing, dependency overriding, response serialisation -- using a
+real `TestClient` request. Both were necessary: the first catches logic bugs precisely, the
+second catches the class of bug that only exists at the HTTP boundary.
+
+Then verified against the real, fully unmocked stack -- not just mocks -- exactly the pattern
+that found the numeric fast-path gap documented above: Orpheus synthesises real user speech,
+`_process_turn` transcribes it with real Whisper, runs the real fast-path/extractor/reducer
+chain, and synthesises the real response back with Orpheus again. A live instrumented call
+counter confirmed a fast-path-eligible turn made zero LLM calls, not just that the response
+looked right.
+
+319 tests passing offline (10 more are `llm`-marked, requiring a live key). `docs/architecture.md` corrected in two places (the fast-path table and the
+numeric-matcher description); `MASTER_PLAN.md`'s own step 3.3 entry above corrected rather
+than silently edited, per this file's own convention of recording what was believed and what
+was actually found.
 
 ---
 

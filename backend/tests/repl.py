@@ -6,6 +6,13 @@ everything from phase 2 together for the first time against the real Groq
 API: extractor (2.1-2.3) -> phase machine (2.5) -> templates (2.4) or
 summary (2.6), driven by actually typing, not synthetic patches in a test.
 
+The "understand -> advance -> decide what to say" sequence itself now lives
+in conversation/orchestrator.py (step 3.4), shared with the /turn endpoint
+-- this file calls `process_utterance` on every turn, unconditionally,
+by design: it exists to exercise real extraction quality against the live
+API, not to demonstrate the fast-path savings the endpoint additionally
+gets from conversation/fastpath.py.
+
 Run from backend/, as a module so `app.*` imports resolve correctly:
 
     python -m tests.repl
@@ -21,36 +28,10 @@ import asyncio
 from groq import AsyncGroq
 
 from app.config import get_settings
-from app.conversation import machine, summary, templates
+from app.conversation import machine, summary
 from app.conversation.machine import Phase
-from app.domain.state import Intent
-from app.llm.extractor import Exchange, extract
-
-_MAX_RECENT_TURNS = 8  # 4 exchanges (user+agent pairs), matching the extractor prompt's
-# own "RECENT_TURNS: the last 4 exchanges" -- see llm/prompts/extractor.md.
-
-
-def _uses_suggested_reply(extraction) -> bool:
-    """The phase 2.4 escape hatch: for a turn templates.py has no slot-based
-    question for anyway (a side question, something off-topic, or something
-    unparseable), use what the extractor already suggested instead of
-    forcing a normal next-question through the machinery. Living here,
-    not in machine.py or templates.py, is deliberate -- see MASTER_PLAN.md
-    step 2.5's note on why this needs no extra plumbing in either module.
-    """
-    return bool(extraction.suggested_reply) and extraction.intent in (
-        Intent.QUESTION,
-        Intent.OFF_TOPIC,
-        Intent.UNCLEAR,
-    )
-
-
-def _closing_line(phase: Phase) -> str:
-    if phase == Phase.REVIEW:
-        return "Is this all correct?"
-    if phase == Phase.COMPLETE:
-        return "Booking confirmed. Thank you!"
-    return ""
+from app.conversation.orchestrator import MAX_RECENT_TURNS, process_utterance
+from app.llm.extractor import Exchange
 
 
 async def main() -> None:
@@ -78,26 +59,16 @@ async def main() -> None:
             if not utterance:
                 continue
 
-            extraction = await extract(
+            outcome = await process_utterance(
                 client,
                 model=settings.groq_llm_model,
-                state=conversation.booking,
+                conversation=conversation,
                 last_question=last_question,
-                recent_turns=recent_turns[-_MAX_RECENT_TURNS:],
+                recent_turns=recent_turns[-MAX_RECENT_TURNS:],
                 utterance=utterance,
             )
-            result = machine.advance(conversation, extraction)
-            conversation = result.conversation
-
-            if _uses_suggested_reply(extraction):
-                response = extraction.suggested_reply
-            elif result.decision is not None:
-                response = templates.compose_turn_response(
-                    extraction.patches, conversation.booking, result.decision
-                )
-            else:
-                summary_text = summary.render_summary(conversation.booking)
-                response = f"{summary_text}\n\n{_closing_line(conversation.phase)}"
+            conversation = outcome.conversation
+            response = outcome.response_text
 
             print(f"\nAgent: {response}\n")
 
