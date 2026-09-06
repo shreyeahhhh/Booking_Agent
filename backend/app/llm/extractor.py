@@ -22,6 +22,7 @@ of left to crash a conversation turn:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from app.domain.specs import ALL_SCALAR_PATHS, get_field
 from app.domain.state import BookingState, ExtractionResult, FieldStatus, Intent
 from app.llm.prompt_builder import load_extractor_system_prompt
 from app.llm.schema import EXTRACTION_RESPONSE_FORMAT, GroqExtractionResult, to_domain_extraction
+from app.retry import retry_after_seconds
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +123,10 @@ def _build_messages(
 
 
 async def _call(client: AsyncGroq, model: str, messages: list[dict[str, str]]) -> str | None:
-    """One attempt. Returns the raw content string, or None on any retriable error."""
+    """One attempt. Returns the raw content string, or None on any retriable
+    error -- except a rate limit, which is left to propagate uncaught so
+    `extract()`'s own loop can inspect it and honour the API's Retry-After
+    hint (app.retry, phase 4.4) rather than retrying blind."""
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -132,6 +137,8 @@ async def _call(client: AsyncGroq, model: str, messages: list[dict[str, str]]) -
             timeout=_TIMEOUT_SECONDS,
         )
         return response.choices[0].message.content
+    except groq.RateLimitError:
+        raise
     except _RETRIABLE_ERRORS as err:
         log.warning("extractor call failed: %s: %s", type(err).__name__, err)
         return None
@@ -168,7 +175,22 @@ async def extract(
 
     content: str | None = None
     for attempt in range(_MAX_ATTEMPTS):
-        content = await _call(client, model, messages)
+        try:
+            content = await _call(client, model, messages)
+        except groq.RateLimitError as err:
+            wait = retry_after_seconds(err)
+            if wait is None:
+                log.warning(
+                    "extractor rate-limited (attempt %d), no short retry-after: %s",
+                    attempt + 1,
+                    err,
+                )
+                break
+            log.warning(
+                "extractor rate-limited (attempt %d), retrying in %.2fs: %s", attempt + 1, wait, err
+            )
+            await asyncio.sleep(wait)
+            continue
         if content is not None:
             break
         log.info("extractor retry %d/%d", attempt + 1, _MAX_ATTEMPTS - 1)
@@ -188,7 +210,15 @@ async def extract(
         {"role": "assistant", "content": content},
         {"role": "user", "content": f"{error} Reply again with corrected, schema-valid JSON only."},
     ]
-    repaired_content = await _call(client, model, repair_messages)
+    # No separate retry-after wait budgeted for the repair pass itself: it is
+    # already a second chance beyond the normal attempt budget above, and a
+    # rate limit here means the exact same thing a None here always has --
+    # fall through to the safe fallback rather than raising.
+    try:
+        repaired_content = await _call(client, model, repair_messages)
+    except groq.RateLimitError as err:
+        log.warning("extractor repair pass rate-limited: %s", err)
+        return FALLBACK_RESULT
     if repaired_content is None:
         return FALLBACK_RESULT
 

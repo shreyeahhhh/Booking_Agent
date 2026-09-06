@@ -69,6 +69,8 @@ from pathlib import Path
 import groq
 from groq import AsyncGroq
 
+from app.retry import retry_after_seconds
+
 log = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 15
@@ -82,16 +84,16 @@ _RESPONSE_FORMAT = "wav"  # the only format Orpheus supports (other Groq TTS
 # docstring -- so it is deliberately excluded and left to propagate rather
 # than retried or swallowed into a None fallback.
 #
-# RateLimitError is retried here on the same "might be transient" assumption
-# extractor.py and stt.py already make, but a live TPD (tokens-per-day)
-# exhaustion during this step's own testing showed that assumption does not
-# hold for every rate-limit cause: the error said "try again in 5h40m0s",
-# which one immediate, no-backoff retry cannot help with at all. Left as-is
-# rather than fixed piecemeal here -- distinguishing a short-lived rate
-# limit from a daily-quota one (the error body names which) is a real
-# improvement, but a cross-cutting one that belongs to phase 4.4's "every
-# external call has a timeout, a retry and a degraded fallback" pass across
-# all three modules at once, not a one-off change to just this one.
+# RateLimitError is retried here, but not blindly: a live TPD (tokens-per-day)
+# exhaustion during this step's own testing showed "might be transient" does
+# not hold for every rate-limit cause -- the error said "try again in
+# 5h40m0s", which one immediate, no-backoff retry cannot help with at all.
+# app.retry.retry_after_seconds (phase 4.4) reads the same Retry-After header
+# Groq's own SDK parses internally, and _synthesize_chunk below only retries
+# when it names a short enough wait to be worth spending inside one voice
+# turn's latency budget -- otherwise this falls straight through to the
+# existing, already-tested None -> speechSynthesis-fallback path instead of
+# waiting out a duration that would blow the turn's budget anyway.
 _RETRIABLE_ERRORS = (
     groq.APIConnectionError,  # also covers APITimeoutError, a subclass
     groq.RateLimitError,
@@ -177,6 +179,20 @@ async def _synthesize_chunk(
                 timeout=_TIMEOUT_SECONDS,
             )
             return await response.read()
+        except groq.RateLimitError as err:
+            last_error = err
+            wait = retry_after_seconds(err)
+            if wait is None:
+                log.warning(
+                    "tts call rate-limited (attempt %d), no short retry-after: %s",
+                    attempt + 1,
+                    err,
+                )
+                break
+            log.warning(
+                "tts call rate-limited (attempt %d), retrying in %.2fs: %s", attempt + 1, wait, err
+            )
+            await asyncio.sleep(wait)
         except _RETRIABLE_ERRORS as err:
             last_error = err
             log.warning(

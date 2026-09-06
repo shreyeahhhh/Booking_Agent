@@ -13,9 +13,17 @@ import time
 from unittest.mock import AsyncMock
 
 import groq
+import httpx
 import pytest
 
 from app.services.tts import _MAX_CHARS, chunk_text, synthesize
+
+
+def _rate_limit_error(headers: dict[str, str]) -> groq.RateLimitError:
+    request = httpx.Request("POST", "https://api.groq.com/x")
+    response = httpx.Response(429, headers=headers, request=request)
+    return groq.RateLimitError("rate limited", response=response, body=None)
+
 
 # --- chunk_text ---------------------------------------------------------
 
@@ -165,6 +173,20 @@ async def test_a_non_retriable_error_propagates_instead_of_being_swallowed(tmp_p
     )
     with pytest.raises(groq.AuthenticationError):
         await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+
+
+async def test_synthesize_waits_out_a_short_rate_limit_then_succeeds(tmp_path):
+    client = _mock_client(side_effects=[_rate_limit_error({"retry-after": "0.01"}), b"wav-bytes"])
+    result = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    assert result == [b"wav-bytes"]
+
+
+async def test_synthesize_gives_up_immediately_on_a_long_rate_limit_wait(tmp_path):
+    """No second attempt at all -- only one side_effect is provided, so a
+    wrongly-attempted retry would IndexError instead of quietly passing."""
+    client = _mock_client(side_effects=[_rate_limit_error({"retry-after": "999"})])
+    result = await synthesize(client, model="m", voice="hannah", text="Got it.", cache_dir=tmp_path)
+    assert result is None
 
 
 async def test_a_repeated_phrase_is_served_from_cache_with_no_second_api_call(tmp_path):

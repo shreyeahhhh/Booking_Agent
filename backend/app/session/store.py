@@ -19,10 +19,14 @@ question's text:
   `fastpath.MetaCommand.REPEAT`.
 - `recent_turns` -- bounded history for the extractor's `RECENT_TURNS`.
 
-`created_at`/`last_active` exist for phase 4.5's TTL sweep to consume later
--- not implemented here, since sweeping unbounded memory growth is that
-step's job, not this one's. Storing the timestamps now means 4.5 can add a
-sweep without restructuring this module.
+`created_at`/`last_active` back phase 4.5's TTL sweep: `ttl_seconds` is an
+optional parameter on `create()`/`get()`, not read from `app.config`
+directly, for the same DI reason `api/routes.py`'s own `Settings` dependency
+is testable rather than hardcoded (step 3.4's finding: a route reaching for
+`get_settings()` itself, instead of receiving it, was exactly what let a
+stale on-disk TTS cache silently invalidate a test). Every existing caller
+that omits `ttl_seconds` gets the pre-4.5 behaviour (sessions live forever)
+unchanged.
 """
 
 from __future__ import annotations
@@ -50,16 +54,58 @@ class Session:
 _sessions: dict[str, Session] = {}
 
 
-def create() -> tuple[str, Session]:
-    """A brand-new session, greeting phase, nothing known yet."""
+def _is_expired(session: Session, *, ttl_seconds: int, now: datetime) -> bool:
+    return (now - session.last_active).total_seconds() > ttl_seconds
+
+
+def _sweep_expired(ttl_seconds: int) -> None:
+    now = datetime.now()
+    expired = [
+        session_id
+        for session_id, session in _sessions.items()
+        if _is_expired(session, ttl_seconds=ttl_seconds, now=now)
+    ]
+    for session_id in expired:
+        del _sessions[session_id]
+
+
+def create(*, ttl_seconds: int | None = None) -> tuple[str, Session]:
+    """A brand-new session, greeting phase, nothing known yet.
+
+    Sweeps every other idle-expired session first when `ttl_seconds` is
+    given. New-session creation is the one call site guaranteed to run once
+    per distinct visitor -- a single visitor's own later turns only ever
+    update their *own* existing entry via `save()`, never add a new key --
+    so it is exactly the point at which "how many stale entries have piled
+    up" actually matters, without needing a separate background task and
+    its own lifecycle to manage.
+    """
+    if ttl_seconds is not None:
+        _sweep_expired(ttl_seconds)
     session_id = uuid.uuid4().hex
     session = Session(conversation=start_conversation())
     _sessions[session_id] = session
     return session_id, session
 
 
-def get(session_id: str) -> Session | None:
-    return _sessions.get(session_id)
+def get(session_id: str, *, ttl_seconds: int | None = None) -> Session | None:
+    """None for an unknown id -- and, when `ttl_seconds` is given, also for
+    one that has since gone idle past it. Expired is made observably
+    identical to never-existed here (rather than a distinct "expired"
+    response) specifically so `api/routes.py`'s existing 404 branch on
+    `store.get(...) is None` already covers both, with nothing new for
+    callers to handle. Deletes the expired entry on the way out, so a
+    session that is only ever looked up again (never recreated) does not
+    have to wait for some other visitor's `create()` to sweep it.
+    """
+    session = _sessions.get(session_id)
+    if session is None:
+        return None
+    now = datetime.now()
+    if ttl_seconds is not None and _is_expired(session, ttl_seconds=ttl_seconds, now=now):
+        del _sessions[session_id]
+        return None
+    return session
 
 
 def save(session_id: str, session: Session) -> None:

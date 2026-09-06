@@ -42,11 +42,14 @@ still leaves, and why it is an accepted trade rather than chased further.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
 import groq
 from groq import AsyncGroq
+
+from app.retry import retry_after_seconds
 
 log = logging.getLogger(__name__)
 
@@ -234,6 +237,20 @@ async def transcribe(
                 timeout=_TIMEOUT_SECONDS,
             )
             return response.text
+        except groq.RateLimitError as err:
+            last_error = err
+            wait = retry_after_seconds(err)
+            if wait is None:
+                log.warning(
+                    "stt call rate-limited (attempt %d), no short retry-after: %s",
+                    attempt + 1,
+                    err,
+                )
+                break
+            log.warning(
+                "stt call rate-limited (attempt %d), retrying in %.2fs: %s", attempt + 1, wait, err
+            )
+            await asyncio.sleep(wait)
         except _RETRIABLE_ERRORS as err:
             last_error = err
             log.warning(
