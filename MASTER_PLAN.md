@@ -622,6 +622,101 @@ directory that `config.py`'s `.env` resolution depends on -- found by the exact 
 key configured locally, backend reports it as missing" symptom this project has now seen
 enough times to recognise immediately.
 
+**Retroactively fixed after real-browser testing surfaced two problems step 3.5's own
+"verified as thoroughly as this environment allows" note had explicitly flagged as
+unverifiable here: Kerala/Karnataka place names, including local ones, were not being
+recognised reliably, and there was "so much lag" that speech often was not captured at
+all.** Both needed the same discipline as everything else in this project -- probe live,
+don't assume -- and the first fix's own side effect needed a second round of the same
+discipline to close properly.
+
+*Place names.* Whisper's `prompt` parameter (OpenAI's own documented, fine-tuning-free
+technique for biasing proper-noun recognition) was added to `stt.transcribe()` as
+`_LOCALITY_PROMPT` -- a representative spread of real Bengaluru localities and Kerala
+places, not an exhaustive gazetteer (Whisper's own prompt budget is ~224 tokens; the
+prompt conditions the *kind* of word expected next, it does not need to enumerate every
+place this project might ever hear). Verified with a controlled live A/B, not assumed
+from the technique's reputation: the same four phrases synthesised and transcribed with
+and without the prompt improved on 3 of 4, regressed on none.
+
+That same prompt, live-reprobed against silence and noise, widened what Whisper
+hallucinates well past the "Thank you." step 3.1 had verified and built `is_noise` against
+-- samples now included "Pag.", a stray URL, several seconds of one word looping, and,
+overwhelmingly the most common shape, the prompt's *own text* echoed back verbatim
+("Kerala places.", "Kerala places, Kosovo."). `is_noise` gained two more checks: a
+structural repeated-word-loop detector (4+ identical words running -- generalises across
+any future hallucination vocabulary shift, unlike a phrase list) and a prefix check for a
+verbatim echo of `_LOCALITY_PROMPT`'s own section-header text. Two confidence-signal
+alternatives were tried and rejected before settling on text heuristics: Whisper's
+`no_speech_prob` was already known (step 3.1) to always read `0` on this API; `avg_logprob`
+from `verbose_json` was tested fresh here and showed overlapping ranges between silence
+(-1.70 to -0.44) and real speech (-0.37 to -0.18) -- no threshold separates them without
+also rejecting genuine answers.
+
+This left a residual, initially *accepted* gap -- live samples like "If you feel like a"
+matched none of the checks -- reasoned to be safe because the extractor's own existing
+Rule 1 machinery was live-tested and confirmed to catch what leaks through: fed garbage
+transcripts against a realistic pending question, ambiguous-sounding leaks came back as
+low-confidence patches with an `ambiguity` reason attached, the same path a genuinely vague
+real answer takes, not a silent fact. **That backstop does not hold unconditionally, and
+trusting it without testing the exact claim being relied on would have shipped a real bug:**
+a live rerun of `test_stt_live.py` (rewritten to assert this layered property end-to-end,
+not `is_noise` in isolation, since the latter was now known not to always hold) caught
+silence transcribed as "Kerala places, Kosovo." coming back from the *real* extractor as
+two separate `PROVIDED` patches (`pickup.locality = "Kerala places"`,
+`drop.locality = "Kosovo"`) at confidence 1.0 with **no ambiguity flag at all** -- exactly
+the silent-corruption outcome the whole design exists to prevent, and the backstop missed
+it precisely because a verbatim place-name-shaped hallucination reads as confident, genuine
+input to an LLM extractor, not as something to question. Root cause: `_PROMPT_ECHO_PREFIXES`
+did not exist yet. Added, re-verified live immediately after (three passing runs; the same
+prefix showed up a fourth and fifth time, live, confirming it is the dominant hallucination
+shape for this prompt, not a one-off), and the test suite now encodes the real contract
+this design depends on -- catch the common, dangerous shape cheaply before any LLM call, and
+for whatever still leaks through, assert the extractor never hands back an unflagged patch,
+rather than asserting the first layer alone catches everything, which live testing had just
+disproven.
+
+*Lag.* Two independent contributors, found by reasoning through what "doesn't take in what
+I say" actually implies rather than guessing at one fix: the frontend's voice-activity
+detection, and backend TTS latency.
+
+`useRecorder.ts`'s VAD used a single fixed RMS constant -- exactly the thing step 3.5's own
+write-up had already flagged as unverifiable without a real microphone, and a real
+microphone is exactly what surfaced it as wrong. Root cause: `getUserMedia({audio:true})`
+enables the browser's default automatic gain control, which continuously renormalises input
+levels, so no fixed number stays calibrated across devices, rooms, or even across a single
+session as ambient noise shifts -- speech would fail to register, or silence would fail to
+end a recording, unpredictably. Replaced with an adaptive noise floor: the ambient level is
+tracked continuously, but only updated while the frame is already classified quiet (so a
+loud word never drags the baseline up and makes the *next* word look like more silence),
+and speech is judged as a fixed margin above that running floor rather than against a
+constant. A throttled `console.debug` line (rms/floor/threshold/speaking state, every 2s)
+was added deliberately, since this environment still cannot grant microphone access to
+verify the algorithm directly -- it exists so a future report can be diagnosed from browser
+console output alone rather than guessed at blind a second time.
+
+`services/tts.py`'s `synthesize()` was awaiting each response chunk's synthesis one at a
+time in a `for` loop. Harmless for a short one-chunk reply, but the final booking-summary
+readback routinely spans multiple chunks, and a sequential loop pays the full per-chunk
+network latency once per chunk instead of once total -- a real, measurable tax against this
+project's own latency budget (docs/architecture.md). Rewritten to fan the same calls out
+through `asyncio.gather`, which preserves chunk order (result order matches input order,
+not completion order) and the existing cache-hit-skips-the-network-call behaviour without
+any change to callers. A timing-based test was added (`test_tts.py`) specifically because
+the existing count/content-only tests could not have caught a regression back to sequential
+awaiting -- only elapsed time can.
+
+**Verification:** offline suite green (`ruff check`, `ruff format --check`, full `pytest`
+run, backend); the live `test_stt_live.py` suite re-run against the real API both before and
+after the `_PROMPT_ECHO_PREFIXES` fix, confirming the failure and then confirming the fix,
+not just trusting the reasoning; `npm run typecheck` and `npm run build` clean on the
+frontend. Browser-pane verification went as far as this environment allows (same
+constraint as step 3.5): session bootstrap, greeting playback, and the mic-permission-denied
+error path all still render correctly post-edit with no console errors; the adaptive VAD
+algorithm itself and real-world place-name recognition still need the user's own microphone
+and voice to confirm, which is exactly why the diagnostic logging above was added rather
+than skipped.
+
 ---
 
 ## Phase 4 — Deployment and resilience (Day 4)
@@ -703,8 +798,8 @@ origin and protocol for free.
 | Cold start makes the demo look broken | High | Warm instance or explicit UI state (4.3) |
 | A rate-limit retry can't help if the limit is a daily quota, not a short one | Medium -- confirmed live in step 3.2 (a `RateLimitError` said "try again in 5h40m0s"; one immediate no-backoff retry cannot address that) | Flagged for phase 4.4's cross-cutting error-handling pass, not fixed piecemeal in one module |
 | A long spoken summary is tedious to listen to (not an Orpheus input-length problem -- step 3.2 found there is no enforced cap -- but a genuine UX one) | Medium | Sentence chunking for streamed playback; fall back to displaying the full written summary while speaking a condensed one |
-| VAD cuts the user off mid-sentence | Medium | Tune by ear on real speech, not by theory |
-| STT mangles Indian place names | Medium | Keep `raw_text` verbatim alongside the normalised locality; never discard what was heard |
+| VAD cuts the user off mid-sentence | Medium -- confirmed live: a fixed RMS threshold does not survive the browser's own automatic gain control across devices/rooms | Adaptive noise floor (phase 3.5 retroactive fix), not a hand-tuned constant; still needs real-microphone confirmation this environment cannot provide |
+| STT mangles Indian place names, especially less common local ones | Medium -- confirmed live: `_LOCALITY_PROMPT` measurably improves recognition (3/4 phrases in a controlled A/B) | Whisper `prompt` conditioning (phase 3.5 retroactive fix) alongside keeping `raw_text` verbatim; the prompt's own side effect (widened noise/silence hallucination, including a live-caught silent-corruption case) is mitigated but not eliminated -- see phase 3.5's write-up |
 | Strict JSON schema rejected by Groq | Medium | Resolved in 2.1 before anything depends on it |
 | Templates sound robotic | Medium | Acknowledgment composition + variant rotation + `suggested_reply` escape hatch |
 | Evaluator's browser is not Chrome -- `MediaRecorder`/mic support is partial or different on Safari and Firefox, and an evaluator has no reason to think to switch | Medium | Test explicitly on Chrome (test-plan.md's manual checklist already says so); state the tested browser plainly in the README (6.2) rather than silently assuming a reviewer already knows, and note whether other browsers were tried at all |

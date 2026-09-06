@@ -60,6 +60,7 @@ dedicated "flag" type to carry beyond the None this module already returns.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -215,17 +216,27 @@ async def synthesize(
 
     Each chunk is cached independently, keyed by its own exact text, so a
     repeated fixed phrase across turns or sessions costs one API call ever,
-    not one per occurrence. Returns None if any chunk could not be
-    synthesised -- the caller should fall back to the browser's
-    speechSynthesis for the whole response rather than play a partial one.
+    not one per occurrence. Chunks are synthesised *concurrently*, not one
+    at a time -- a multi-chunk response (the final booking summary readback
+    is the common case actually long enough to span more than one chunk)
+    otherwise pays the full per-chunk network latency once per chunk instead
+    of once total, a real, measurable tax on the ~2.5s turn-latency target
+    docs/test-plan.md's manual checklist holds this project to. Returns None
+    if any chunk could not be synthesised -- the caller should fall back to
+    the browser's speechSynthesis for the whole response rather than play a
+    partial one.
     """
     chunks = chunk_text(text)
-    audio_chunks: list[bytes] = []
-    for chunk in chunks:
-        audio = await _get_or_synthesize_chunk(
-            client, model=model, voice=voice, text=chunk, cache_dir=cache_dir
+    if not chunks:
+        return []
+    results = await asyncio.gather(
+        *(
+            _get_or_synthesize_chunk(
+                client, model=model, voice=voice, text=chunk, cache_dir=cache_dir
+            )
+            for chunk in chunks
         )
-        if audio is None:
-            return None
-        audio_chunks.append(audio)
-    return audio_chunks
+    )
+    if any(audio is None for audio in results):
+        return None
+    return list(results)

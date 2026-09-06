@@ -2,11 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type RecorderStatus = "idle" | "recording" | "processing" | "error";
 
-const SILENCE_RMS_THRESHOLD = 0.02; // tuned by ear against real speech, not by theory --
-// see docs/test-plan.md's manual voice checklist. Revisit this constant first if VAD
-// cuts speech off too early or hangs too long once tested against a real microphone.
+// A *fixed* RMS threshold was the first version here, and real-device testing
+// showed it badly miscalibrated -- recordings ran long because "speech" or
+// "silence" never crossed a hardcoded number that had no relationship to the
+// user's actual microphone, room noise, or the browser's own automatic gain
+// control (which getUserMedia({audio:true}) enables by default and which
+// continuously renormalises levels, exactly the kind of thing a fixed cutoff
+// cannot track). Replaced with an adaptive floor: the "quiet" level is
+// measured continuously from the live stream itself, and speech is judged
+// relative to that running estimate, not to a number picked in advance.
+const SPEECH_MARGIN_ABOVE_FLOOR = 0.018; // how far above the tracked floor counts as speech
+const FLOOR_ADAPT_RATE = 0.05; // how fast the floor follows the ambient level while quiet
+const INITIAL_NOISE_FLOOR = 0.01; // conservative seed; corrects itself within a few frames
 const SILENCE_DURATION_MS = 700; // matches MASTER_PLAN.md's 3.5 acceptance criterion
-const MAX_RECORDING_MS = 30_000; // safety net if VAD never detects silence (background noise)
+const MAX_RECORDING_MS = 20_000; // safety net if speech is never detected at all
 
 const PREFERRED_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
 
@@ -17,12 +26,11 @@ function pickSupportedMimeType(): string {
   return ""; // let the browser choose its own default rather than fail outright
 }
 
-/** Mic capture with amplitude-based voice-activity detection: recording
- * starts on demand and stops itself once the user has spoken and then
- * gone quiet for SILENCE_DURATION_MS -- no push-to-talk, no manual "done"
- * step. Silence is only ever measured *after* real speech is first
- * detected, so a thoughtful pause before speaking is never mistaken for
- * "finished talking".
+/** Mic capture with adaptive voice-activity detection: recording starts on
+ * demand and stops itself once the user has spoken and then gone quiet for
+ * SILENCE_DURATION_MS -- no push-to-talk, no manual "done" step. Silence is
+ * only ever measured *after* real speech is first detected, so a thoughtful
+ * pause before speaking is never mistaken for "finished talking".
  */
 export function useRecorder(onComplete: (audio: Blob, mimeType: string) => void) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
@@ -101,6 +109,8 @@ export function useRecorder(onComplete: (audio: Blob, mimeType: string) => void)
 
     let hasDetectedSpeech = false;
     let silenceStartedAt: number | null = null;
+    let noiseFloor = INITIAL_NOISE_FLOOR;
+    let lastLogAt = 0;
 
     const tick = () => {
       analyser.getByteTimeDomainData(timeDomain);
@@ -110,18 +120,41 @@ export function useRecorder(onComplete: (audio: Blob, mimeType: string) => void)
         sumSquares += normalized * normalized;
       }
       const rms = Math.sqrt(sumSquares / timeDomain.length);
+      const speechThreshold = noiseFloor + SPEECH_MARGIN_ABOVE_FLOOR;
+      const isSpeech = rms >= speechThreshold;
 
-      if (rms >= SILENCE_RMS_THRESHOLD) {
+      if (isSpeech) {
         hasDetectedSpeech = true;
         silenceStartedAt = null;
-      } else if (hasDetectedSpeech) {
-        if (silenceStartedAt === null) {
-          silenceStartedAt = performance.now();
-        } else if (performance.now() - silenceStartedAt >= SILENCE_DURATION_MS) {
-          stop();
-          return;
+      } else {
+        // Only track the floor while quiet, so a loud word never drags the
+        // baseline up and makes the *next* word look like more silence.
+        noiseFloor += (rms - noiseFloor) * FLOOR_ADAPT_RATE;
+        if (hasDetectedSpeech) {
+          if (silenceStartedAt === null) {
+            silenceStartedAt = performance.now();
+          } else if (performance.now() - silenceStartedAt >= SILENCE_DURATION_MS) {
+            stop();
+            return;
+          }
         }
       }
+
+      // Throttled diagnostic: cheap enough to leave in permanently, and the
+      // one thing that let a real VAD miscalibration (see the constants
+      // above) be diagnosed and fixed after a real-device report instead of
+      // guessed at blind, since this environment has no microphone to test
+      // against directly.
+      const now = performance.now();
+      if (now - lastLogAt > 2000) {
+        lastLogAt = now;
+        console.debug(
+          `[vad] rms=${rms.toFixed(4)} floor=${noiseFloor.toFixed(4)} ` +
+            `threshold=${speechThreshold.toFixed(4)} speaking=${isSpeech} ` +
+            `hasSpoken=${hasDetectedSpeech}`,
+        );
+      }
+
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
