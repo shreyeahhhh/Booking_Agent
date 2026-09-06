@@ -320,7 +320,7 @@ acceptance criterion, live, not simulated.
 | # | Step | Files | Acceptance |
 |---|---|---|---|
 | 3.1 | STT service | `services/stt.py` | ✅ Groq `whisper-large-v3-turbo`. Empty/noise transcripts handled without an LLM call. |
-| 3.2 | TTS service + audio cache | `services/tts.py` | Groq Orpheus. Sentence chunking for the 200-char limit. Cache keyed by text hash. Browser `speechSynthesis` fallback flag. |
+| 3.2 | TTS service + audio cache | `services/tts.py` | ✅ Groq Orpheus. Sentence chunking (a self-imposed 200-char chunk size, not an enforced limit -- see findings below). Cache keyed by text hash. Browser `speechSynthesis` fallback flag. |
 | 3.3 | Fast-path classifier | `conversation/fastpath.py` | Yes/no, meta-commands, bare numerics. **Fails open to the LLM.** |
 | 3.4 | `/turn` endpoint | `api/routes.py` | Orchestrates STT → fastpath/extract → reduce → policy → template → TTS. |
 | 3.5 | Voice UI | `frontend/src/` | Mic button, VAD silence detection (~700ms), audio playback, transcript. |
@@ -366,6 +366,70 @@ malformed request twice in a row reproduces the identical message both times —
 an identical retry cannot help. The reasoning held; it just wasn't proven yet when first
 written down. `test_stt_live.py::test_malformed_audio_is_a_structural_400_not_a_transient_one`
 keeps that proof live going forward.
+
+**Step 3.2 is a case study in why this project insists on a live call over trusting
+documentation, including its own -- two things written down here as verified fact turned out
+to be wrong once actually tested.** Before writing any code, a web search for Orpheus's
+per-request character limit returned conflicting claims -- one page said 200 characters,
+another said "keep it under 10K" -- so the model-specific Groq doc page was fetched directly
+to settle it: 200 characters, stated as a hard limit. Voices
+`autumn/diana/hannah/austin/daniel/troy` were also confirmed from the docs, so
+`settings.groq_tts_voice = "hannah"` (set back in phase 0) is a real, valid voice. `wav` was
+confirmed as Orpheus's only supported `response_format` (the SDK's own type hints list
+`flac/mp3/mulaw/ogg/wav`, inherited from the older PlayAI TTS models Orpheus replaced).
+
+The first live call failed every time with a 400 that no doc mentioned at all:
+
+```
+The model `canopylabs/orpheus-v1-english` requires terms acceptance. Please have the org
+admin accept the terms at https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english
+```
+
+Six requests (different lengths, both response formats, an invalid voice) all failed
+identically -- the same "retrying cannot help" signature step 3.1 already established for a
+structural 400, so `_synthesize_chunk` excludes `BadRequestError` from its retry set for the
+same reason `services/stt.py`'s does. This needed one manual action outside this codebase --
+an org admin accepting Orpheus's model terms at the URL above -- which has since been done.
+
+**Once unblocked, the first real call immediately found a second bug, this time in the test
+file, not the product code**: three of four live tests failed with `response_format must be
+one of [wav]`, because `test_tts_live.py`'s `_speak()` helper omitted `response_format`
+entirely, relying on a server-side default that does not exist for this model.
+`services/tts.py`'s own `_synthesize_chunk` always passes it explicitly and was never
+affected -- this was a test-only gap, fixed by defaulting it in `_speak()` too.
+
+**Then a length sweep disproved the "200 characters is a hard limit" claim from the docs**,
+which this file had itself repeated as settled fact one step ago. `test_text_one_character_
+over_the_limit_is_rejected` expected 201 characters to be rejected; the real API accepted it
+without complaint, and a follow-up sweep found no length-based rejection at all through 1000
+characters. The wall that does exist is a `RateLimitError` reporting a **tokens-per-day (TPD)
+limit of 3600** for this model on the free/on-demand tier -- separate from, and far tighter
+than, the LLM's own free-tier limits already in the risk register, and already partly spent
+by this step's own testing. The disproven test was removed rather than patched, since there
+was no real boundary left to assert; `_MAX_CHARS = 200` is kept in `services/tts.py`, but its
+justification changed from "Groq's enforced limit" to "our own chunk size, chosen for
+streaming latency (architecture.md's mitigation 3) and to spend the newly-discovered TPD
+budget more slowly." One related gap is flagged rather than fixed here: `RateLimitError` is
+retried immediately with no backoff, which cannot help a "try again in 5h40m" TPD exhaustion
+-- correct fix belongs to phase 4.4's cross-cutting error-handling pass across all three
+service modules, not a one-off change to this one.
+
+With both bugs fixed, live synthesis was confirmed working end to end: a real short phrase
+("Got it, Koramangala to Whitefield.") produced ~142KB of playable WAV audio in one call.
+Further live stress-testing (e.g. finding an actual upper bound) was deliberately not
+pursued once the TPD constraint appeared -- it is a shared, scarce resource for the rest of
+this project, not something to spend chasing a boundary that turns out not to gate anything.
+
+Everything not gated on the two live findings above was correct on the first pass:
+`chunk_text()` (16 unit tests, zero mocking) packs whole sentences greedily and falls back to
+a word-boundary split for the one sentence longer than the chunk size on its own;
+`synthesize()`'s on-disk cache (keyed by a hash of model+voice+text) is proven with real file
+I/O via pytest's `tmp_path` -- a repeated phrase costs one mocked API call, not two, and a
+different voice does not share the other voice's cache entry. Chunks are returned as a list
+of separate WAV byte-strings rather than concatenated into one file: WAV's header encodes a
+single length, so gluing complete WAV files together produces a malformed one, and keeping
+them separate is what lets the caller stream-play the first chunk while later ones are still
+being synthesised.
 
 ---
 
@@ -425,9 +489,11 @@ degrades gracefully when STT, the LLM or TTS fails.
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Groq free-tier limits (8k TPM / 200k TPD) stall development | High | Add paid credit on Day 1. Whole-week spend is estimated under $5. |
+| Groq free-tier limits (8k TPM / 200k TPD on the LLM) stall development | High | Add paid credit on Day 1. Whole-week spend is estimated under $5. |
+| **Orpheus TTS has its own, much tighter free-tier limit (3600 TPD)**, separate from the LLM's | High -- confirmed live in step 3.2, already partly consumed by that step's own testing | Synthesise sparingly during development (the audio cache means production usage is far lighter than test sweeps); add paid credit before phase 3's voice UI work needs repeated real synthesis |
 | Cold start makes the demo look broken | High | Warm instance or explicit UI state (4.3) |
-| Orpheus 200-char cap makes the summary clunky | Medium | Sentence chunking; fall back to displaying the full summary and speaking a condensed one |
+| A rate-limit retry can't help if the limit is a daily quota, not a short one | Medium -- confirmed live in step 3.2 (a `RateLimitError` said "try again in 5h40m0s"; one immediate no-backoff retry cannot address that) | Flagged for phase 4.4's cross-cutting error-handling pass, not fixed piecemeal in one module |
+| A long spoken summary is tedious to listen to (not an Orpheus input-length problem -- step 3.2 found there is no enforced cap -- but a genuine UX one) | Medium | Sentence chunking for streamed playback; fall back to displaying the full written summary while speaking a condensed one |
 | VAD cuts the user off mid-sentence | Medium | Tune by ear on real speech, not by theory |
 | STT mangles Indian place names | Medium | Keep `raw_text` verbatim alongside the normalised locality; never discard what was heard |
 | Strict JSON schema rejected by Groq | Medium | Resolved in 2.1 before anything depends on it |

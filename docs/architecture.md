@@ -253,6 +253,60 @@ Mitigations, in order of value:
 4. **Optimistic UI** — render the transcript and state-panel updates the moment STT
    returns, before audio is ready. Perceived latency matters more than real latency.
 
+### TTS implementation notes (step 3.2)
+
+`services/tts.py` implements mitigations 1 and 3 above. This step's own findings are a case
+study in why this project insists on a live call over trusting documentation, including its
+own: two separate beliefs written down here after reading Groq's docs turned out to be wrong
+once actually tested, and a live call surfaced a real constraint no doc mentioned at all.
+
+- **WAV is the only supported `response_format`** for `canopylabs/orpheus-v1-english`
+  specifically, confirmed — the SDK's generic type hints list `flac/mp3/mulaw/ogg/wav`,
+  inherited from Groq's older PlayAI TTS models, but Orpheus itself only accepts `wav`. A
+  request with `response_format` omitted is rejected too ("must be one of [wav]"), which
+  first showed up as three failing tests in `test_tts_live.py` before being traced to a
+  missing explicit parameter rather than a real code bug.
+- **200 characters is *not* an API-enforced limit**, despite Orpheus's own doc page stating
+  "max 200 characters" and despite that claim first being written down here as verified
+  fact. A live sweep once the account's model-terms block (below) was cleared sent
+  200/250/300/500/1000-character requests with no length complaint at all from any of them.
+  `_MAX_CHARS = 200` in `services/tts.py` is kept anyway, but as a *self-imposed* chunk size
+  for two reasons that do not depend on any enforced ceiling: mitigation 3 below (stream the
+  first chunk while later ones synthesise), and the tight daily token budget discovered next.
+- **The real wall is the account's daily token quota, not per-request size**: pushing further
+  (2000+ characters in one request) hit a `RateLimitError` reporting a *tokens-per-day* (TPD)
+  limit of 3600 for this specific model on the free/on-demand tier — separate from, and far
+  tighter than, the LLM's own free-tier limits already in the risk register below. `chunk_text()`
+  packing responses into small, cache-friendly pieces now matters more for conserving that
+  budget than it ever did for satisfying a length rule that does not actually exist. One
+  related gap, flagged rather than fixed here: `_RETRIABLE_ERRORS` retries `RateLimitError`
+  immediately with no backoff, which cannot help a "try again in 5h40m" TPD exhaustion at
+  all — a genuine improvement, but a cross-cutting one for phase 4.4's error-handling pass
+  across all three service modules, not a one-off fix to just this one.
+- **A live call surfaced a real deployment blocker no doc mentioned**: this project's Groq
+  org had not accepted Orpheus's model terms, so every call 400ed with code
+  `model_terms_required` until an org admin visited
+  `https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english` and accepted
+  them — since resolved. Six different requests (short/long text, both response formats, an
+  invalid voice) all failed identically before that — the same "retrying cannot help"
+  signature already established for STT's structural 400s — so `_synthesize_chunk` excludes
+  `BadRequestError` from its retry set, the same reasoning as `services/stt.py`.
+  `test_tts_live.py` detects this specific error code and skips with the URL rather than
+  failing in a confusing way, for any other environment that hits it fresh.
+- `chunk_text()` packs whole sentences greedily rather than one chunk per sentence, since
+  most composed responses are well under 200 characters on their own. Chunks are returned as
+  a list of separate WAV byte-strings, never concatenated into one file — WAV's header
+  encodes a single length, so gluing complete WAV files together produces a malformed file.
+  This also matches mitigation 3 directly: the caller can start playing chunk 0 while chunk 1
+  is still being synthesised.
+
+Live-confirmed once terms were accepted: a real short phrase ("Got it, Koramangala to
+Whitefield.") synthesised into ~142KB of playable WAV audio in one call. Further live
+stress-testing (e.g. proving an exact upper bound) was deliberately not pursued once the TPD
+constraint above appeared — the account's daily budget is a shared, scarce resource for the
+rest of this project, not something to spend chasing a boundary that, per the finding above,
+does not actually gate anything.
+
 ## Model selection
 
 Primary: **`openai/gpt-oss-120b`** on Groq.
