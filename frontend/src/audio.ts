@@ -7,18 +7,7 @@
  * hatch for when Groq TTS is unavailable.
  */
 
-function playOne(base64Wav: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const audio = new Audio(`data:audio/wav;base64,${base64Wav}`);
-    audio.addEventListener("ended", () => resolve(), { once: true });
-    audio.addEventListener("error", () => reject(new Error("audio playback failed")), {
-      once: true,
-    });
-    audio.play().catch(reject);
-  });
-}
-
-function speakWithBrowserTts(text: string): Promise<void> {
+function speakWithBrowserTts(text: string, onCancel: (cancel: () => void) => void): Promise<void> {
   return new Promise((resolve) => {
     if (!("speechSynthesis" in window) || !text) {
       resolve();
@@ -26,25 +15,63 @@ function speakWithBrowserTts(text: string): Promise<void> {
     }
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.onend = () => resolve();
-    utterance.onerror = () => resolve(); // a failed fallback should not block the UI
+    utterance.onerror = () => resolve(); // a failed (or cancelled) fallback should not block the UI
+    onCancel(() => window.speechSynthesis.cancel());
     window.speechSynthesis.speak(utterance);
   });
 }
 
-export async function speak(
-  audioChunks: string[],
-  ttsFallback: boolean,
-  text: string,
-): Promise<void> {
-  if (ttsFallback || audioChunks.length === 0) {
-    await speakWithBrowserTts(text);
-    return;
-  }
-  for (const chunk of audioChunks) {
-    try {
-      await playOne(chunk);
-    } catch {
-      // One malformed chunk should not silence the rest of the response.
+export type SpeechHandle = {
+  /** Resolves once playback finishes on its own, or is stopped early. */
+  finished: Promise<void>;
+  /** Cuts the current response off immediately -- the "stop talking"
+   * control, and also called automatically when the user taps the mic
+   * again while the agent is still speaking (talking over it is the
+   * natural way to interrupt a voice assistant). */
+  stop: () => void;
+};
+
+function playOne(base64Wav: string, registerStop: (stop: () => void) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const audio = new Audio(`data:audio/wav;base64,${base64Wav}`);
+    const finish = () => resolve();
+    registerStop(() => {
+      audio.pause();
+      finish(); // pausing alone never fires "ended" -- resolve explicitly so the caller's loop can move on
+    });
+    audio.addEventListener("ended", finish, { once: true });
+    audio.addEventListener("error", () => reject(new Error("audio playback failed")), { once: true });
+    audio.play().catch(reject);
+  });
+}
+
+export function speak(audioChunks: string[], ttsFallback: boolean, text: string): SpeechHandle {
+  let stopped = false;
+  let cancelCurrent: (() => void) | null = null;
+
+  const stop = () => {
+    stopped = true;
+    cancelCurrent?.();
+  };
+
+  const run = async () => {
+    if (ttsFallback || audioChunks.length === 0) {
+      await speakWithBrowserTts(text, (cancel) => {
+        cancelCurrent = cancel;
+      });
+      return;
     }
-  }
+    for (const chunk of audioChunks) {
+      if (stopped) break;
+      try {
+        await playOne(chunk, (cancel) => {
+          cancelCurrent = cancel;
+        });
+      } catch {
+        // One malformed chunk should not silence the rest of the response.
+      }
+    }
+  };
+
+  return { finished: run(), stop };
 }

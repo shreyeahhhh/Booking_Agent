@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, replace
 
+import groq
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from groq import AsyncGroq
 from pydantic import BaseModel
@@ -180,9 +181,25 @@ async def _process_turn(
     audio_bytes: bytes,
     filename: str,
 ) -> _TurnOutcome:
-    text = await stt.transcribe(
-        client, model=settings.groq_stt_model, audio=audio_bytes, filename=filename
-    )
+    try:
+        text = await stt.transcribe(
+            client, model=settings.groq_stt_model, audio=audio_bytes, filename=filename
+        )
+    except groq.BadRequestError:
+        # services/stt.py deliberately lets a structural 400 (malformed or
+        # unprocessable audio -- confirmed live: real MediaRecorder output
+        # from a stream that never carried an actual signal, e.g. a muted or
+        # disconnected mic, produced exactly this) propagate rather than
+        # retrying it -- retrying an identical malformed request cannot
+        # help. But propagating is not the same as crashing the request:
+        # nothing above this point ever caught it before, so it reached
+        # FastAPI's default handler as a raw 500 instead of this turn's
+        # existing, already-tested "no usable speech" path. There genuinely
+        # is no usable speech in an unprocessable file, so folding it into
+        # the same text-is-None branch below is not a new fallback -- it is
+        # this exact case fitting the contract that branch already exists
+        # for.
+        text = None
 
     if text is None or stt.is_noise(text):
         # No LLM call, no state change: nothing was understood this turn,

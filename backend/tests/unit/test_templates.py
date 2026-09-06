@@ -52,6 +52,16 @@ def test_format_date_short_and_full():
     assert format_date_full("2026-09-12") == "Saturday, 12 September"
 
 
+def test_format_date_falls_back_to_the_raw_phrase_instead_of_crashing():
+    """A real, live-observed crash: domain.policy._give_up_on_exhausted can
+    accept a date phrase domain.normalizers could never resolve, keeping its
+    raw, non-ISO phrase as the field's value permanently (see that
+    function's own docstring) -- format_date_* must survive being handed
+    that later, not just at the moment it first arrives."""
+    assert format_date_short("September 7, Monday") == "September 7, Monday"
+    assert format_date_full("September 7, Monday") == "September 7, Monday"
+
+
 def test_format_vehicle_covers_every_enum_value():
     from app.domain.state import VehicleType
 
@@ -189,6 +199,38 @@ def test_schedule_combines_date_and_time():
     state = _apply(BookingState(), *patches)
     ack = compose_acknowledgment(patches, state)
     assert "Saturday" in ack and "evening" in ack
+
+
+def test_a_calendar_date_phrase_beyond_the_narrow_patterns_still_acknowledges():
+    """ "September 7" needs domain.normalizers' dateutil fallback, not the
+    weekday/ordinal-day patterns test_schedule_combines_date_and_time above
+    already covers -- confirms the acknowledgment path benefits from that
+    fallback too, not just resolve_relative_date in isolation."""
+    patch = Patch(
+        op=PatchOp.SET, field="schedule.date", value="September 7", needs_normalization=True
+    )
+    state = _apply(BookingState(), patch)
+    assert get_field(state, "schedule.date").status == FieldStatus.PROVIDED
+    ack = compose_acknowledgment([patch], state)
+    assert ack is not None and "September" not in ack  # spoken short form is the weekday only
+
+
+def test_an_unresolvable_date_is_not_voiced_back_as_if_understood():
+    """A real, live-observed crash, reproduced at the acknowledgment level
+    (not just the formatter in isolation above): a date phrase that
+    resolve_relative_date genuinely cannot parse must not raise, and must
+    not be spoken back as a confirmed date the same turn the agent is about
+    to ask about it again -- see _schedule_fragment's own docstring."""
+    patch = Patch(
+        op=PatchOp.SET,
+        field="schedule.date",
+        value="sometime next month probably",
+        needs_normalization=True,
+    )
+    state = _apply(BookingState(), patch)
+    assert get_field(state, "schedule.date").status == FieldStatus.AMBIGUOUS
+    ack = compose_acknowledgment([patch], state)  # must not raise
+    assert ack is None or "next month" not in ack
 
 
 def test_is_asap_overrides_date_and_time_phrasing():

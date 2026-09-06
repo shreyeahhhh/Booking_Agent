@@ -119,6 +119,31 @@ def test_noise_reprompt_with_no_prior_question_is_just_the_apology():
     assert _noise_reprompt(None) == "Sorry, I didn't catch that."
 
 
+async def test_malformed_audio_produces_a_reprompt_instead_of_a_raw_500(settings):
+    """Confirmed live, not hypothetical: a real MediaRecorder clip carrying
+    no actual signal (a muted/disconnected mic recording through the full
+    20s safety-net duration) made Whisper return a structural 400.
+    services/stt.py deliberately lets that propagate rather than retrying
+    it -- correct, an identical retry cannot fix a malformed file -- but
+    nothing here used to catch what it propagates, so it reached FastAPI's
+    default handler as a raw 500 instead of this turn's own, already-tested
+    noise-reprompt path. There genuinely is no usable speech in a file the
+    API could not even process, so this is that existing path's contract,
+    not a new one."""
+    client = _mock_client()
+    client.audio.transcriptions.create = AsyncMock(
+        side_effect=groq.BadRequestError(
+            "could not process file",
+            response=AsyncMock(status_code=400),
+            body={"error": {"code": "invalid_media_file"}},
+        )
+    )
+    session = _session(last_question="Where are you moving from?")
+    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    assert outcome.agent_text == "Sorry, I didn't catch that. Where are you moving from?"
+    assert client.calls["llm"] == 0
+
+
 # --- meta-commands: no LLM call, no state change (repeat) -----------------
 
 
