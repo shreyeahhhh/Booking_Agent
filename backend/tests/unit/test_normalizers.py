@@ -54,6 +54,46 @@ def test_unparseable_phrase_returns_none():
     assert resolve_relative_date("sometime next month probably", FRI_11_SEP) is None
 
 
+# --- calendar-date fallback (dateutil) -----------------------------------
+# A real, live-observed crash: "September 7, Monday" matched none of the
+# patterns above, so its raw phrase ended up stored verbatim as
+# schedule.date's value and later crashed templates.format_date_short's
+# date.fromisoformat call. These phrasings are all real ways a user might
+# state the same date the crash was observed on.
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "September 7, Monday",  # the exact phrase observed live
+        "Monday, September 7",
+        "September 7th",
+        "the 7th of September",
+        "7 September",
+        "on September 7th",
+        "next Monday, September 7",
+    ],
+)
+def test_calendar_date_phrases_resolve_via_the_dateutil_fallback(phrase):
+    assert resolve_relative_date(phrase, datetime(2026, 9, 5)) == date(2026, 9, 7)
+
+
+def test_a_bare_month_and_day_already_past_this_year_rolls_to_next_year():
+    """Said in October, "September 7" must mean next September, not the one
+    that already passed -- the same always-resolve-forward rule the
+    weekday and ordinal-day branches already apply."""
+    reference = datetime(2026, 10, 15)
+    assert resolve_relative_date("September 7", reference) == date(2027, 9, 7)
+
+
+def test_clearly_non_date_phrases_are_not_misread_as_dates_by_the_fallback():
+    """fuzzy=True must not turn "no date here at all" into a guessed one --
+    verified live before trusting it (see normalizers.py's own docstring),
+    re-asserted here as a permanent regression test."""
+    for phrase in ["a sofa and two cupboards", "third floor", "yes there is a lift"]:
+        assert resolve_relative_date(phrase, FRI_11_SEP) is None
+
+
 def test_time_window_keywords():
     assert resolve_time_of_day("morning").time_window == TimeWindow.MORNING
     assert resolve_time_of_day("in the afternoon").time_window == TimeWindow.AFTERNOON

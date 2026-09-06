@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from dateutil import parser as _dateutil_parser
+
 from app.domain.state import TimeWindow
 
 # --------------------------------------------------------------------------
@@ -92,7 +94,47 @@ def resolve_relative_date(phrase: str, reference: datetime) -> date | None:
                 return None
         return candidate
 
-    return None
+    return _resolve_calendar_date(phrase, reference)
+
+
+def _resolve_calendar_date(phrase: str, reference: datetime) -> date | None:
+    """Last resort: a month-name-and-day phrase ("September 7", "the 7th of
+    September", "Monday, September 7") that none of the narrower patterns
+    above matched -- confirmed live as a real gap, not a hypothetical one:
+    "September 7, Monday" reached this function, fell through every branch
+    above, and its raw, unparsed phrase ended up stored as `schedule.date`'s
+    value, which later crashed `templates.format_date_short`'s
+    `date.fromisoformat` call (that call is now also defensive, but the
+    right fix is resolving what can genuinely be resolved, not just
+    surviving what cannot).
+
+    `dateutil` is used only here, deliberately narrow rather than as this
+    module's general date parser: it is a pinned dependency
+    (requirements.txt) that had never actually been wired up anywhere before
+    this. `fuzzy=True` is needed for phrases with connector words a strict
+    parse rejects ("the 7th of September", "next Monday, September 7") --
+    live-tested before trusting it, not assumed: the same five clearly
+    non-date phrases this project's own fastpath/extractor tests already use
+    ("a sofa and two cupboards", "third floor", "yes there is a lift", ...)
+    were all correctly rejected with `fuzzy=True` still on, not misread as
+    dates. The residual risk is bounded further by *when* this runs at all:
+    only after the extractor itself has already tagged the utterance as a
+    `schedule.date` value, never over arbitrary unrelated text.
+    """
+    try:
+        resolved = _dateutil_parser.parse(phrase, default=reference, fuzzy=True)
+    except (ValueError, OverflowError):
+        return None
+    candidate = resolved.date()
+    if candidate < reference.date():
+        # A bare "September 7" said in October means next September, not
+        # last -- the same always-resolve-forward rule the weekday and
+        # ordinal-day branches above already apply, for the same reason.
+        try:
+            candidate = candidate.replace(year=candidate.year + 1)
+        except ValueError:
+            return None  # Feb 29 rolling into a non-leap year
+    return candidate
 
 
 # --------------------------------------------------------------------------

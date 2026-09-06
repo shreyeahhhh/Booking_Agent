@@ -31,8 +31,17 @@ function pickSupportedMimeType(): string {
  * SILENCE_DURATION_MS -- no push-to-talk, no manual "done" step. Silence is
  * only ever measured *after* real speech is first detected, so a thoughtful
  * pause before speaking is never mistaken for "finished talking".
+ *
+ * `onComplete` may return a Promise; `status` stays "processing" only until
+ * it settles, then returns to "idle" either way (a failed turn should still
+ * leave the mic usable again, not stuck). A real, confirmed bug this fixes:
+ * nothing previously transitioned `status` back out of "processing" at all,
+ * so the *second* tap on the mic -- every conversation past the first
+ * turn -- silently did nothing, since `start()`'s own guard blocks
+ * re-recording while "processing". Caught from a real recorded conversation
+ * getting stuck on "Thinking…" forever, not found by reading the code.
  */
-export function useRecorder(onComplete: (audio: Blob, mimeType: string) => void) {
+export function useRecorder(onComplete: (audio: Blob, mimeType: string) => void | Promise<void>) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -89,7 +98,9 @@ export function useRecorder(onComplete: (audio: Blob, mimeType: string) => void)
       const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || "audio/webm" });
       cleanup();
       setStatus("processing");
-      onComplete(blob, recorder.mimeType || mimeType || "audio/webm");
+      Promise.resolve(onComplete(blob, recorder.mimeType || mimeType || "audio/webm")).finally(() => {
+        setStatus("idle");
+      });
     });
 
     recorder.start();

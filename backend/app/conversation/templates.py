@@ -34,6 +34,7 @@ from app.domain.specs import get_field, spec_for
 from app.domain.state import (
     AmbiguityReason,
     BookingState,
+    FieldStatus,
     Item,
     Patch,
     PatchOp,
@@ -59,16 +60,36 @@ def format_date_short(iso_date: str) -> str:
     questions: "Saturday, 12 September" is precise but reads over-formal
     said aloud mid-sentence. The fuller form is for the final summary
     (step 2.6), where written precision matters more than spoken brevity.
+
+    Falls back to the raw phrase verbatim if it is not (or is no longer) a
+    resolved ISO date -- confirmed live as a real, not hypothetical, gap:
+    domain.policy._give_up_on_exhausted accepts a date phrase
+    domain.normalizers could never resolve after its clarification budget
+    runs out, keeping the original unparsed phrase as the field's value
+    rather than a synthesised ISO date this project has no basis to invent
+    (the same "never discard what was heard" choice locality's raw_text
+    already makes). Crashing on that stored phrase later is strictly worse
+    than saying it back verbatim.
     """
-    return date.fromisoformat(iso_date).strftime("%A")
+    try:
+        return date.fromisoformat(iso_date).strftime("%A")
+    except ValueError:
+        return iso_date
 
 
 def format_date_full(iso_date: str) -> str:
     """Weekday and calendar date -- "Saturday, 12 September".
 
-    For the final summary (step 2.6), not spoken acknowledgments.
+    For the final summary (step 2.6), not spoken acknowledgments. Same
+    unresolved-phrase fallback as format_date_short, and for the same
+    reason -- this is exactly where a date that was never resolved is
+    actually shown to the user, alongside the assumption note
+    _give_up_on_exhausted records for it.
     """
-    d = date.fromisoformat(iso_date)
+    try:
+        d = date.fromisoformat(iso_date)
+    except ValueError:
+        return iso_date
     return d.strftime("%A, %d %B").replace(" 0", " ")
 
 
@@ -151,7 +172,19 @@ def _schedule_fragment(state: BookingState, changed_paths: set[str]) -> str | No
     if asap_changed and get_field(state, "schedule.is_asap").value:
         return "as soon as possible"
 
-    date_text = format_date_short(get_field(state, "schedule.date").value) if date_changed else None
+    date_field = get_field(state, "schedule.date")
+    # Still AMBIGUOUS (as opposed to given-up-on-and-accepted) means the
+    # phrase could not be resolved *and* the agent is about to ask about it
+    # again this same turn -- voicing it back first as if it were understood
+    # ("Got it -- September 7, Monday") would read as confused rather than
+    # helpful. A date that was later accepted unresolved (see
+    # format_date_short's own docstring) is exactly the case this check
+    # should NOT suppress, so it keys off status, not merely "did it parse".
+    date_text = (
+        format_date_short(date_field.value)
+        if date_changed and date_field.status != FieldStatus.AMBIGUOUS
+        else None
+    )
     window_value = get_field(state, "schedule.time_window").value
     window_text = window_value.value if window_changed and window_value else None
 

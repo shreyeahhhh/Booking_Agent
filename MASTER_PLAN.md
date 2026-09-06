@@ -750,6 +750,133 @@ algorithm itself and real-world place-name recognition still need the user's own
 and voice to confirm, which is exactly why the diagnostic logging above was added rather
 than skipped.
 
+**Retroactively fixed after the user's own real-browser testing found the mic permanently
+stopped responding after the first turn -- the single most severe bug this project has
+shipped, and one no amount of backend testing could have caught, since it lived entirely in
+frontend state the backend never touches.** Root cause: `useRecorder.ts`'s `status` moved
+`idle -> recording -> processing` on every turn, but nothing anywhere ever moved it back.
+`handleMicClick` only handles `idle`/`error`/`recording`, so once `status` reached
+`processing` after the very first recording, it stayed there forever -- every later tap on
+the mic was silently a no-op. This had been invisible to every check this project had run
+so far specifically because none of them exercised a *second* real recording through the
+actual hook: the HTTP-level end-to-end test earlier in this same session drove `/api/turn`
+directly with Python, never touching `useRecorder.ts` at all, and the extensive automated
+suite has no frontend test runner to have caught it either. Fixed by having `onComplete`
+optionally return a Promise and awaiting it in the `"stop"` handler, resetting `status` to
+`"idle"` in a `finally` once the turn settles, success or failure alike, so a failed turn
+still leaves the mic usable for a retry rather than stuck.
+
+**Verified live, not just reasoned through, since this exact bug was invisible to reasoning
+the first time:** this sandbox still cannot grant real microphone access, so real audio
+input was synthesised entirely in-browser instead -- a `MediaStreamAudioDestinationNode`
+fed by an oscillator, installed in place of `navigator.mediaDevices.getUserMedia`, produces
+a genuine `MediaStream` indistinguishable from a real mic at the API level. Clicking the
+real mic button twice in a row, with the oscillator torn down mid-recording so the VAD's
+real silence-detection logic (not a mock) drove the auto-stop, produced two consecutive
+real `POST /api/turn` round trips before the fix would have allowed only one.
+
+**That same synthesised-audio test caught a second, independent, genuine bug along the
+way -- a raw 500 where the whole exchange should have degraded gracefully.** The encoded
+clip (real audio-track data, but carrying no actual signal for its full 20-second
+max-recording safety-net duration) made Whisper return a structural
+`invalid_media_file` 400. `services/stt.py` deliberately lets that propagate rather than
+retrying it -- correct, an identical retry on a malformed file cannot help, and this exact
+reasoning already has its own passing test (`test_transcribe_does_not_retry_a_bad_request_
+error`). But nothing above `transcribe()` ever caught what it propagates, so it reached
+FastAPI's default handler as an unhandled 500 instead of the turn's own, already-tested "no
+usable speech" reprompt path -- a real, plausible field failure (a muted or disconnected
+microphone recording nothing for the full safety-net window), not just a synthetic-test
+artifact. Fixed at the one place it actually belongs: `api/routes.py`'s `_process_turn`
+catches `groq.BadRequestError` around the `stt.transcribe()` call and treats it exactly like
+the `None` result that branch already exists to handle -- not a new fallback, the existing
+one's contract finally covering the one case that used to slip past it. Re-verified live
+immediately after: the identical scenario that previously 500'd now returns 200 with a
+graceful reprompt.
+
+**Two UX gaps closed alongside, from the same real-testing pass:** no way to stop the agent
+mid-response, and a spinning mic icon during "processing" that read as gimmicky rather than
+as a load indicator. `audio.ts`'s `speak()` now returns a `{finished, stop}` handle instead
+of a bare Promise -- `stop()` pauses whatever chunk is currently playing and resolves its
+pending promise immediately rather than leaving the caller's loop waiting on an "ended"
+event that pausing alone never fires. `App.tsx` shows an explicit "Stop" control while a
+response is playing, and tapping the mic to start a new recording also interrupts any
+response still playing first -- talking over the agent is the natural way to barge in, and
+`isSpeaking` is deliberately independent of the recorder's own `status`, so the mic reads
+"Tap to talk" (truly idle, not mid-turn) the moment a response starts playing rather than
+staying artificially blocked until playback finishes. The processing spinner
+(`conic-gradient` background rotating via `animation: spin`) is replaced with a plain
+opacity/scale pulse -- a buffering indicator, not something that reads as the icon itself
+spinning.
+
+**A separate, non-bug finding from the same conversation, worth recording precisely because
+it is not a code defect:** re-reading the assessment brief directly (not from memory)
+confirmed it states outright that "UI design is not the primary focus of this assignment...
+You do not need to spend significant time creating a highly polished or production-grade
+UI," and its entire evaluation-criteria list is about the conversation/AI engineering, not
+visual design. The current landing page (a full marketing page -- hero, testimonial
+marquee, feature cards, a steps section, a CTA, a tech-stack row -- with the actual
+interactive widget below all of it) is real, deliberate design work, but it is not what the
+brief asks to be evaluated on, and it adds scroll distance between "open the URL" and
+"interact with the voice agent" that works against the brief's own "make it easy to
+interact with the voice agent" UI guidance. Flagged for a decision, not silently changed:
+restructuring so the interactive widget is immediately visible needs the user's own call on
+whether to trim or reorder the marketing sections, not something to unilaterally rewrite
+mid-bug-fix.
+
+**A third real bug from the same real-testing session, this time reported directly with a
+full server traceback rather than found by further probing -- a date phrase crashed the
+whole turn with a 500 instead of degrading gracefully.** The user said something that made
+the real extractor propose `schedule.date = "September 7, Monday"`. `domain.normalizers.
+resolve_relative_date` only recognised a fixed set of shapes (today/tomorrow/a bare or
+modified weekday/"the Nth") -- this phrase matched none of them, so `domain.reducer`
+correctly marked the field `AMBIGUOUS` per its own documented contract, but *also* stored
+the raw, un-parsed phrase as the field's `.value` (the same "never discard what was heard"
+choice locality's `raw_text` already makes). Nothing downstream expected that: `templates.
+_schedule_fragment` tries to voice back *any* field that changed this turn regardless of
+its status, calling `format_date_short(value)` -> `date.fromisoformat(value)` on a string
+that was never ISO in the first place, crashing on the very first turn a date phrase falls
+outside that fixed set -- not a rare edge case for a required field real users describe in
+many different ways.
+
+Fixed in two complementary layers rather than one, since they close two different gaps:
+
+- **Root cause -- resolve more of what a real user actually says.** `dateutil`
+  (`requirements.txt`'s own pinned dependency, referenced by
+  `test_import_boundary.py`'s allowed-imports comment but never actually wired into any
+  module until now) backs a new last-resort branch in `resolve_relative_date` for
+  month-name-and-day phrases ("September 7", "the 7th of September", "Monday, September
+  7"). `fuzzy=True` is needed for phrases with connector words a strict parse rejects --
+  verified live before trusting it, not assumed: the same clearly-non-date phrases this
+  project's own fastpath tests already use ("a sofa and two cupboards", "third floor", ...)
+  were re-tested and still correctly return "no date here", not a misread one. Scoped
+  narrowly on purpose -- this only ever runs on a phrase the extractor has already tagged
+  as a `schedule.date` value, never over arbitrary text, so `fuzzy`'s permissiveness is not
+  a blank cheque. A resolved date already in the past for the reference year rolls forward
+  to next year, the same always-resolve-forward rule the weekday and ordinal-day branches
+  already apply, for the same reason.
+- **Last line of defence -- never let an un-resolvable phrase crash the turn.**
+  `format_date_short`/`format_date_full` now fall back to the raw phrase verbatim on a
+  `ValueError` instead of propagating one, since a genuinely unparseable phrase is still a
+  real, designed-for possibility even with the improved coverage above: `domain.policy.
+  _give_up_on_exhausted` accepts a date it could never resolve after the clarification
+  budget runs out, flipping status from `AMBIGUOUS` to `PROVIDED` while *keeping* the same
+  raw phrase as `.value` permanently -- meaning `conversation/summary.py`'s own final-summary
+  renderer (which checks `status != EMPTY`, not `!= AMBIGUOUS`) was equally exposed to the
+  exact same crash, later, for any date that reaches that give-up path. Separately,
+  `_schedule_fragment` now also skips voicing the date at all while it is *still*
+  `AMBIGUOUS` (as opposed to given-up-on-and-accepted) -- purely a conversational-quality
+  fix once the crash itself cannot happen, since saying a phrase back as if understood the
+  same turn the agent is about to ask about it again reads as confused, not helpful.
+
+**Verified live, with the real extractor, not just the offline suite:** a fresh
+conversation given "Let's do September 7th, a Monday, in the evening." resolved
+`schedule.date` to `2026-09-07` (correctly a Monday) with status `PROVIDED` and a clean
+"Got it — Monday, evening." response -- no crash, where the identical class of phrase
+previously 500'd. New regression tests cover the exact reported phrase, several
+realistic siblings, the past-date-rolls-forward rule, the non-date phrases must not be
+misread by `fuzzy=True`, and the formatter/acknowledgment path surviving a phrase that
+still cannot be resolved at all.
+
 ---
 
 ## Phase 4 — Deployment and resilience (Day 4)

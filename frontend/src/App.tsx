@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { BookingStateShape, FieldValue, TurnResponse } from "./api";
 import { createSession, postTurn } from "./api";
+import type { SpeechHandle } from "./audio";
 import { speak } from "./audio";
 import { useRecorder } from "./useRecorder";
 
@@ -107,8 +108,30 @@ export default function App() {
   const [done, setDone] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [isSlowStart, setIsSlowStart] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const sessionRequestedRef = useRef(false);
+  const speechRef = useRef<SpeechHandle | null>(null);
+
+  // Plays one response and tracks isSpeaking for the stop-talking control.
+  // Stops (and does not double-count) whatever was already playing first --
+  // a new response always wins over a stale one still finishing up.
+  const playResponse = useCallback((audioChunks: string[], ttsFallback: boolean, text: string) => {
+    speechRef.current?.stop();
+    const handle = speak(audioChunks, ttsFallback, text);
+    speechRef.current = handle;
+    setIsSpeaking(true);
+    void handle.finished.finally(() => {
+      if (speechRef.current === handle) {
+        speechRef.current = null;
+        setIsSpeaking(false);
+      }
+    });
+  }, []);
+
+  const stopSpeaking = useCallback(() => {
+    speechRef.current?.stop();
+  }, []);
 
   const rows = useMemo(() => rowsFrom(bookingState), [bookingState]);
   const filledCount = rows.filter((r) => r.filled).length;
@@ -153,38 +176,47 @@ export default function App() {
         sessionIdRef.current = session.session_id;
         setSessionId(session.session_id);
         applyTurn(session);
-        void speak(session.audio_chunks, session.tts_fallback, session.agent_text);
+        playResponse(session.audio_chunks, session.tts_fallback, session.agent_text);
       })
       .catch(() => {
         window.clearTimeout(coldStartTimer);
         setApiError("Could not reach the booking service. Refresh to try again.");
       });
-  }, [applyTurn]);
+  }, [applyTurn, playResponse]);
 
   const handleRecordingComplete = useCallback(
     (audio: Blob, mimeType: string) => {
       const currentSessionId = sessionIdRef.current;
-      if (!currentSessionId) return;
-      postTurn(currentSessionId, audio, `clip.${extensionFor(mimeType)}`)
+      if (!currentSessionId) return undefined;
+      // Returned (not fire-and-forget): useRecorder awaits this to know when
+      // to leave "processing" and let the mic be tapped again -- see its
+      // own docstring for the stuck-forever bug this fixes.
+      return postTurn(currentSessionId, audio, `clip.${extensionFor(mimeType)}`)
         .then((response) => {
           applyTurn(response, response.user_text || undefined);
-          void speak(response.audio_chunks, response.tts_fallback, response.agent_text);
+          playResponse(response.audio_chunks, response.tts_fallback, response.agent_text);
         })
         .catch(() => setApiError("That turn didn't go through. Try again."));
     },
-    [applyTurn],
+    [applyTurn, playResponse],
   );
 
   const { status, error: recorderError, start, stop } = useRecorder(handleRecordingComplete);
 
   const micLabel =
     status === "recording" ? "Listening…" : status === "processing" ? "Thinking…" : "Tap to talk";
-  const micSublabel = recorderError ?? (done ? "Booking confirmed" : "No app. No forms.");
+  const micSublabel =
+    recorderError ??
+    (isSpeaking ? "Speaking… tap to interrupt" : done ? "Booking confirmed" : "No app. No forms.");
   const visualizerActive = status === "recording";
 
   const handleMicClick = () => {
-    if (status === "idle" || status === "error") void start();
-    else if (status === "recording") stop();
+    if (status === "idle" || status === "error") {
+      stopSpeaking(); // talking over the agent is how you interrupt it
+      void start();
+    } else if (status === "recording") {
+      stop();
+    }
   };
 
   const last = turns[turns.length - 1];
@@ -239,6 +271,13 @@ export default function App() {
               <span className="mic__sublabel">{micSublabel}</span>
             </span>
           </button>
+
+          {isSpeaking && (
+            <button type="button" className="stop-talking" onClick={stopSpeaking}>
+              <span className="stop-talking__icon" />
+              Stop
+            </button>
+          )}
 
           <div className={`visualizer ${visualizerActive ? "visualizer--active" : ""}`}>
             {[0, 0.12, 0.24, 0.36, 0.18, 0.3, 0.06, 0.42].map((delay, i) => (
