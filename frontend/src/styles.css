@@ -157,10 +157,17 @@ button {
   background: var(--lime);
 }
 
-/* ---- hero ---- */
+/* ---- hero ----
+   Merged with the former standalone `.try` section (MASTER_PLAN.md): the
+   PDF brief evaluates the voice agent itself, not landing-page design, and
+   explicitly says the UI only needs to make the agent easy to reach -- a
+   giant, viewport-filling title that pushed the actual mic and live
+   booking panel below the fold worked against that. The title is now a
+   single compact line, sized to leave room for the interactive part to be
+   visible without scrolling on an ordinary laptop screen. */
 
 .hero {
-  padding: clamp(28px, 6vw, 72px) clamp(16px, 4vw, 44px) 0;
+  padding: clamp(20px, 3.5vw, 40px) clamp(16px, 4vw, 44px) clamp(40px, 6vw, 72px);
 }
 
 .hero__eyebrow {
@@ -181,10 +188,10 @@ button {
 }
 
 .hero__title {
-  margin: clamp(14px, 2vw, 26px) 0 0;
-  font-size: clamp(58px, 15.5vw, 250px);
-  line-height: 0.86;
-  letter-spacing: -0.015em;
+  margin: clamp(10px, 1.4vw, 16px) 0 0;
+  font-size: clamp(32px, 5.2vw, 60px);
+  line-height: 1;
+  letter-spacing: -0.02em;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -194,7 +201,7 @@ button {
   flex-wrap: wrap;
   align-items: flex-end;
   gap: clamp(20px, 4vw, 56px);
-  margin-top: clamp(24px, 3vw, 40px);
+  margin-top: clamp(20px, 2.6vw, 32px);
 }
 
 .mic {
@@ -309,17 +316,14 @@ button {
   animation-play-state: running;
 }
 
-/* ---- try it ---- */
-
-.try {
-  padding: clamp(36px, 6vw, 80px) clamp(16px, 4vw, 44px) 0;
-}
+/* ---- try it (now embedded directly in .hero -- see its own comment) ---- */
 
 .try__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: clamp(20px, 3vw, 40px);
   align-items: stretch;
+  margin-top: clamp(28px, 4vw, 48px);
 }
 
 .panel {
@@ -409,6 +413,28 @@ button {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(17, 17, 16, 0.45);
+}
+
+.panel__summary-button {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--lime);
+  border: none;
+  border-radius: 999px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+.panel__summary-button:hover {
+  background: var(--orange);
+  color: var(--cream);
+  transform: translateY(-1px);
 }
 
 .row {
@@ -655,6 +681,191 @@ button {
   font-family: "Geist Mono", ui-monospace, monospace;
   font-size: 12px;
   color: var(--orange);
+}
+
+/* ---- confirmation modal ----
+   The final turn's full summary used to be dumped as a wall of text into
+   the transcript's small panel_line (App.tsx still speaks that same full
+   text via TTS, unchanged) -- this is where it actually lives now, laid
+   out as real detail rows instead of one run-on paragraph. */
+
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes modal-card-in {
+  0% {
+    opacity: 0;
+    transform: translateY(28px) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes modal-badge-pop {
+  0% {
+    transform: scale(0);
+  }
+  65% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes modal-section-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(17, 17, 16, 0.55);
+  backdrop-filter: blur(6px);
+  animation: modal-backdrop-in 0.2s ease both;
+}
+
+.modal-card {
+  position: relative;
+  width: 100%;
+  max-width: 460px;
+  max-height: min(88vh, 720px);
+  overflow-y: auto;
+  background: var(--cream);
+  border: 2px solid var(--ink);
+  border-radius: 28px;
+  box-shadow: 10px 10px 0 var(--ink);
+  padding: clamp(28px, 5vw, 40px) clamp(22px, 4vw, 32px) 26px;
+  animation: modal-card-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.modal-card__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid rgba(17, 17, 16, 0.18);
+  background: var(--cream);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.modal-card__close:hover {
+  background: rgba(17, 17, 16, 0.06);
+  border-color: var(--ink);
+  transform: rotate(90deg);
+}
+
+.modal-card__badge {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: var(--orange);
+  display: grid;
+  place-items: center;
+  animation: modal-badge-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s both;
+}
+
+.modal-card__title {
+  margin: 16px 0 4px;
+  font-size: clamp(24px, 4vw, 30px);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.modal-card__subtitle {
+  margin: 0;
+  color: var(--ink-62);
+  font-size: 14.5px;
+}
+
+.modal-card__sections {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.modal-section {
+  border-top: 1px solid rgba(17, 17, 16, 0.1);
+  padding-top: 12px;
+  opacity: 0;
+  animation: modal-section-in 0.45s ease both;
+}
+
+.modal-section--assumed {
+  background: rgba(255, 61, 31, 0.06);
+  border: 1.5px dashed rgba(255, 61, 31, 0.4);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.modal-section__title {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(17, 17, 16, 0.45);
+  margin-bottom: 8px;
+}
+
+.modal-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 0;
+}
+
+.modal-row__label {
+  font-size: 12.5px;
+  color: var(--ink-50);
+  flex: none;
+}
+
+.modal-row__value {
+  min-width: 0;
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-align: right;
+}
+
+.modal-row__value--full {
+  text-align: left;
+  font-weight: 500;
+  font-size: 14.5px;
+  line-height: 1.4;
+}
+
+.modal-card__done {
+  width: 100%;
+  justify-content: center;
+  margin-top: 24px;
 }
 
 /* ---- misc ---- */

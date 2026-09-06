@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { BookingStateShape, FieldValue, TurnResponse } from "./api";
+import type { BookingStateShape, TurnResponse } from "./api";
 import { createSession, postTurn } from "./api";
 import type { SpeechHandle } from "./audio";
 import { speak } from "./audio";
+import ConfirmationModal from "./ConfirmationModal";
+import { displayValue, formatDate, formatItems, prettify } from "./format";
 import { useRecorder } from "./useRecorder";
 
 type Turn = { speaker: "you" | "relay"; text: string };
@@ -17,6 +19,12 @@ type Row = { label: string; value: string; filled: boolean };
 // happening instead of leaving the user guessing.
 const COLD_START_HINT_MS = 4_000;
 
+// The final turn's agent_text is a long, single-paragraph summary --
+// exactly right to *speak* (playResponse below still gets the real text
+// unchanged), wrong to dump into the transcript's small panel_line as a
+// wall of text. ConfirmationModal is where that detail actually lives now.
+const BOOKING_CONFIRMED_TRANSCRIPT_LINE = "Booking confirmed — see the summary.";
+
 const MIME_EXTENSIONS: Record<string, string> = {
   "audio/webm": "webm",
   "audio/ogg": "ogg",
@@ -27,43 +35,6 @@ const MIME_EXTENSIONS: Record<string, string> = {
 function extensionFor(mimeType: string): string {
   const base = mimeType.split(";")[0].trim();
   return MIME_EXTENSIONS[base] ?? "webm";
-}
-
-function prettify(raw: string | null): string {
-  if (!raw) return "";
-  return raw
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "";
-  const parsed = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  return parsed.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
-}
-
-function formatItems(items: BookingStateShape["goods"]["items"]): string {
-  return items
-    .map((item) => (item.quantity > 1 ? `${item.quantity} ${item.name}` : item.name))
-    .join(", ");
-}
-
-/** A field's current value, formatted, plus " (was: <previous>)" when
- * `revisions` shows it was corrected -- MASTER_PLAN.md step 3.6, the one
- * piece 3.5 deliberately deferred. `revisions` is append-only (see
- * domain/reducer.py's `_write_scalar`), so the *last* entry is the value
- * immediately before the current one, not the first-ever value. Both the
- * current and previous value go through the same `format` function, so a
- * corrected vehicle type reads "Tata Ace (was: Mini Truck)", not a raw
- * enum value next to a prettified one. */
-function displayValue<T>(field: FieldValue<T>, format: (value: T) => string, placeholder: string): string {
-  if (field.value === null) return placeholder;
-  const current = format(field.value);
-  const previous = field.revisions.at(-1);
-  if (!previous || previous.value === null) return current;
-  return `${current} (was: ${format(previous.value)})`;
 }
 
 function rowsFrom(state: BookingStateShape | null): Row[] {
@@ -109,6 +80,7 @@ export default function App() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [isSlowStart, setIsSlowStart] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [showConfirmation, setShowConfirmation] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const sessionRequestedRef = useRef(false);
   const speechRef = useRef<SpeechHandle | null>(null);
@@ -133,18 +105,32 @@ export default function App() {
     speechRef.current?.stop();
   }, []);
 
+  // Closing the popup mid-readout should not leave the agent still talking
+  // into an empty page -- dismissing it is as much an interrupt as tapping
+  // the mic already is.
+  const closeConfirmation = useCallback(() => {
+    stopSpeaking();
+    setShowConfirmation(false);
+  }, [stopSpeaking]);
+
   const rows = useMemo(() => rowsFrom(bookingState), [bookingState]);
   const filledCount = rows.filter((r) => r.filled).length;
 
   const applyTurn = useCallback((response: TurnResponse | { agent_text: string }, userText?: string) => {
+    const isFinal = "done" in response && response.done;
     setTurns((prev) => [
       ...prev,
       ...(userText ? [{ speaker: "you" as const, text: userText }] : []),
-      { speaker: "relay" as const, text: response.agent_text },
+      // The full agent_text is still what gets *spoken* (playResponse below
+      // is called with the real, unabridged response) -- this only governs
+      // what's typed out in the small transcript panel, where the final
+      // turn's full paragraph read as a wall of text rather than a summary.
+      { speaker: "relay" as const, text: isFinal ? BOOKING_CONFIRMED_TRANSCRIPT_LINE : response.agent_text },
     ]);
     if ("state" in response) {
       setBookingState(response.state);
       setDone(response.done);
+      if (response.done) setShowConfirmation(true);
     }
   }, []);
 
@@ -233,17 +219,13 @@ export default function App() {
         </a>
       </header>
 
-      <section className="hero">
+      <section id="try" className="hero">
         <div className="hero__eyebrow">
           <span className="eyebrow-dot" />
           Book a truck by talking
         </div>
 
-        <h1 className="hero__title">
-          Just
-          <br />
-          say it.
-        </h1>
+        <h1 className="hero__title">Just say it.</h1>
 
         <div className="hero__controls">
           <button type="button" className={`mic mic--${status}`} onClick={handleMicClick}>
@@ -292,9 +274,7 @@ export default function App() {
             ))}
           </div>
         </div>
-      </section>
 
-      <section id="try" className="try">
         <div className="try__grid">
           <div className="panel panel--dark">
             <div className="panel__meta">
@@ -313,9 +293,15 @@ export default function App() {
           <div className="panel panel--light">
             <div className="panel__header">
               <span className="panel__title">Your booking</span>
-              <span className="panel__hint">
-                {filledCount} of {rows.length}
-              </span>
+              {done ? (
+                <button type="button" className="panel__summary-button" onClick={() => setShowConfirmation(true)}>
+                  Summary
+                </button>
+              ) : (
+                <span className="panel__hint">
+                  {filledCount} of {rows.length}
+                </span>
+              )}
             </div>
             {rows.map((row) => (
               <div className="row" key={row.label}>
@@ -434,7 +420,7 @@ export default function App() {
       <section className="tech">
         <div className="tech__row">
           <span className="tech__row-label">Under the hood</span>
-          <span>Whisper · GPT-OSS-120B structured output · Orpheus TTS</span>
+          <span>Whisper · GPT-OSS-120B structured output · Cartesia TTS</span>
           <span>FastAPI + Pydantic v2</span>
         </div>
       </section>
@@ -453,6 +439,10 @@ export default function App() {
         </div>
         <div className="footer__wordmark">Just say it</div>
       </footer>
+
+      {showConfirmation && bookingState && (
+        <ConfirmationModal state={bookingState} onClose={closeConfirmation} />
+      )}
     </div>
   );
 }

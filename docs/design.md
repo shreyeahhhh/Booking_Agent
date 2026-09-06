@@ -173,12 +173,19 @@ that makes an agent feel like a form.
 place names. Keeping what was actually heard means a mis-transcription is recoverable and
 visible, rather than silently overwritten by a confident-looking normalisation. `reducer.
 _write_locality_raw_text` populates it from the patch's `evidence`; `summary._render_address`
-surfaces it only when it actually diverges from the interpreted value. Live-probed against
-the real extractor with deliberately garbled input ("kore mangala"): the extractor's Rule 1
-means it does not attempt to clean a mangled name up into a confident-looking real place, it
-passes the text through as both `value` and `evidence` -- so in practice the two usually
-agree, and this is a safety net for when they don't (including real mangled STT output,
-untestable until step 3.4 wires in a live microphone) rather than a routinely-triggered check.
+surfaces it only when it actually diverges from the interpreted value. Originally
+live-probed against the real extractor with deliberately garbled input ("kore mangala") and
+found to be a dormant safety net rather than a routinely-triggered check: Rule 1 as first
+written meant the extractor never attempted to clean up a mangled name, so `value` and
+`evidence` always agreed in practice. **A later, deliberate exception narrows this**
+(MASTER_PLAN.md, Rule 10 in the prompt): for locality fields specifically, a phrase the
+extractor can confidently identify as a mangled real place name now normalises `value`
+while `evidence` keeps the literal heard phrase -- live-confirmed for at least one real
+case ("Koro Mengala" -> `value="Koramangala"`, `evidence="Koro Mengala"`) -- which is what
+actually makes this "(heard as ...)" rendering fire in practice now, not just exist as an
+unused code path. The same rule explicitly still refuses to force a fragment that does not
+clearly name one specific place (a bare state name, or hallucination-shaped noise) into a
+confident match; those keep going through the ordinary vague-answer/ambiguity path instead.
 
 **Silence and noise never reach the LLM.** `services/stt.is_noise` classifies an empty or
 hallucinated transcript before anything downstream runs, so a silent mic never burns an
