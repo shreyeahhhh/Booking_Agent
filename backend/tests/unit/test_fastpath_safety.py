@@ -57,3 +57,16 @@ def test_a_bare_number_with_no_prior_question_has_no_expected_answer_type():
     no field for a bare "2" to be an answer to."""
     result = classify("2", phase=Phase.GREETING, decision=None)
     assert result is None
+
+
+def test_the_trailing_unit_strip_is_anchored_not_a_general_word_removal():
+    """Extending the integer matcher to ordinal words ("third") plus an
+    optional trailing "floor" (step 3.4's live-verified fix) must not
+    reopen the exact hole the numeric matcher was already guarded against:
+    "floor" only strips when it is the *last* word, so a real second fact
+    that happens to mention "floor" earlier in the sentence is untouched
+    and still fails to reduce to a bare number."""
+    result = classify(
+        "the floor is third, but there's no lift", phase=Phase.GATHERING, decision=_WHICH_FLOOR
+    )
+    assert result is None

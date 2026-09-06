@@ -392,3 +392,11 @@ def compose_turn_response(patches: list[Patch], state: BookingState, decision: S
     ack = compose_acknowledgment(patches, state)
     question = compose_question(decision, state)
     return f"{ack} {question}" if ack else question
+
+
+# A single fixed line, not a rotated set like _QUESTIONS above: a greeting is
+# heard at most once per session, so the repetition that _QUESTIONS's
+# rotation exists to avoid can never happen here -- there is nothing to vary
+# it against within one conversation. Spoken before anything is known, so it
+# also cannot depend on state the way every other composed line here does.
+GREETING = "Hi! I can help you book a move. Where are you moving from, and what are you sending?"

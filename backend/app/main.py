@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from groq import AsyncGroq
 
 from app.api.routes import router
 from app.config import get_settings
@@ -21,7 +22,7 @@ log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     if not settings.is_configured:
@@ -29,7 +30,20 @@ async def lifespan(_: FastAPI):
             "GROQ_API_KEY is not set. Speech and extraction are unavailable; "
             "the deterministic core still works. Copy .env.example to .env to fix."
         )
-    yield
+    # One client for the process lifetime, not one per request: AsyncGroq
+    # holds a connection pool, and every /turn call already makes up to
+    # three separate Groq calls (STT, maybe the LLM, TTS) -- there is no
+    # reason to pay connection setup on each one. None when unconfigured,
+    # matching the rest of this app's "starts fine without a key, fails
+    # clearly only where a key is actually needed" contract (config.py).
+    app.state.groq_client = (
+        AsyncGroq(api_key=settings.groq_api_key) if settings.is_configured else None
+    )
+    try:
+        yield
+    finally:
+        if app.state.groq_client is not None:
+            await app.state.groq_client.close()
 
 
 app = FastAPI(title="Voice Booking Agent", version="0.1.0", lifespan=lifespan)

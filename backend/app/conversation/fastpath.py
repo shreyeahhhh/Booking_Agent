@@ -33,7 +33,14 @@ exactly the `SlotDecision` the caller already has from the previous turn
   sound right?"), so yes/no means CONFIRM/REJECT, never a field value.
 - A `CONFLICT`, `AMBIGUOUS` or `MISSING` decision on a `BOOLEAN`-typed field:
   yes/no is the field's own value.
-- The same, on an `INTEGER`-typed field: a bare digit string is the value.
+- The same, on an `INTEGER`-typed field: a bare digit string, cardinal word
+  ("three") or ordinal word ("third") -- optionally followed by "floor(s)"
+  or "helper(s)" -- is the value (`_parse_integer`). Verified live during
+  step 3.4's integration testing, not assumed: a TTS-round-trip probe
+  showed real spoken number answers transcribe as *words* ("third",
+  "Two.") far more often than as digits, including for a bare,
+  context-free number. A digit-only regex -- this module's first version
+  -- is correct for typed input but barely ever matches real speech.
 - Any other answer type (TEXT/DATE/TIME_WINDOW/ENUM): no fast path exists
   for these -- interpreting them needs judgement this module deliberately
   does not have.
@@ -59,6 +66,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.conversation.machine import Phase
+from app.domain.normalizers import NUMBER_WORDS
 from app.domain.policy import SlotDecision, SlotReason
 from app.domain.specs import AnswerType, spec_for
 from app.domain.state import ExtractionResult, Intent, Patch, PatchOp
@@ -118,6 +126,30 @@ _RESTART_PHRASES = frozenset(
 
 _BARE_INTEGER = re.compile(r"\d+")
 _PUNCTUATION = re.compile(r"[.!?,]")
+_TRAILING_UNIT = re.compile(r"\s+(floors?|helpers?|people|persons?)$")
+
+# Ordinal words, for "which floor?" -> "third" -- see classify()'s own
+# docstring for why these matter: verified live (a TTS-round-trip probe
+# during step 3.4's integration testing) that Whisper transcribes a spoken
+# floor answer as the word "third", not the digit "3" or ordinal "3rd". A
+# digit-only regex, which is all this module originally shipped with, is
+# correct for typed input but never matches real spoken floor answers.
+_ORDINAL_WORDS = {
+    "ground": 0,
+    "zeroth": 0,
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+    "eleventh": 11,
+    "twelfth": 12,
+}
 
 
 class MetaCommand(StrEnum):
@@ -145,6 +177,24 @@ def _normalize(text: str) -> str:
 
 def _confirmation(intent: Intent) -> FastPathResult:
     return FastPathResult(extraction=ExtractionResult(intent=intent, patches=[]))
+
+
+def _parse_integer(normalized: str) -> int | None:
+    """A bare digit string, a bare cardinal word ("three"), or a bare
+    ordinal word ("third") -- each optionally followed by the one noun
+    this project's INTEGER fields are ever answered with a unit for
+    ("third floor", "two helpers"). Still a single, exact match against
+    the *whole* utterance, never a substring search: the trailing-noun
+    strip is anchored with `$`, so "third floor, but there's no lift" does
+    not end in "floor" and is untouched by it, then correctly fails every
+    check below because the full remaining string is not a bare number.
+    """
+    normalized = _TRAILING_UNIT.sub("", normalized)
+    if _BARE_INTEGER.fullmatch(normalized):
+        return int(normalized)
+    if normalized in NUMBER_WORDS:
+        return NUMBER_WORDS[normalized]
+    return _ORDINAL_WORDS.get(normalized)
 
 
 def _field_value(decision: SlotDecision, value: object, *, evidence: str) -> FastPathResult:
@@ -207,8 +257,9 @@ def classify(
         return None
 
     if spec.answer_type == AnswerType.INTEGER:
-        if _BARE_INTEGER.fullmatch(normalized):
-            return _field_value(decision, int(normalized), evidence=utterance)
+        value = _parse_integer(normalized)
+        if value is not None:
+            return _field_value(decision, value, evidence=utterance)
         return None
 
     # TEXT / DATE / TIME_WINDOW / ENUM: no fast path. Dates and time windows

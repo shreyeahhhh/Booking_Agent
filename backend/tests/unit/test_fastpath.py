@@ -18,6 +18,7 @@ _MISSING_HAS_LIFT = SlotDecision("pickup.has_lift", "lift at pickup", SlotReason
 _AMBIGUOUS_HAS_LIFT = SlotDecision("pickup.has_lift", "lift at pickup", SlotReason.AMBIGUOUS)
 _CONFLICT_HAS_LIFT = SlotDecision("pickup.has_lift", "lift at pickup", SlotReason.CONFLICT)
 _MISSING_FLOOR = SlotDecision("pickup.floor", "pickup floor", SlotReason.MISSING)
+_MISSING_HELPERS = SlotDecision("service.helpers_required", "helpers required", SlotReason.MISSING)
 _CONFLICT_FLOOR = SlotDecision("drop.floor", "drop floor", SlotReason.CONFLICT)
 _MISSING_LOCALITY = SlotDecision("pickup.locality", "pickup location", SlotReason.MISSING)
 _MISSING_DATE = SlotDecision("schedule.date", "date", SlotReason.MISSING)
@@ -157,10 +158,30 @@ def test_a_conflicted_integer_field_is_corrected_not_set():
     assert result.extraction.patches[0].op == PatchOp.CORRECT
 
 
-def test_a_word_number_does_not_fast_path_the_integer_matcher():
-    """The regex is deliberately "tight" (digits only) -- word numbers need
-    the same normalisation judgement dates/enums do, so they escalate."""
-    assert classify("three", phase=Phase.GATHERING, decision=_MISSING_FLOOR) is None
+def test_a_cardinal_word_number_answers_a_pending_integer_field():
+    """Verified live (step 3.4): a spoken floor answer transcribes as the
+    word "three" far more often than the digit "3" -- a digit-only regex
+    would barely ever fire for real speech."""
+    result = classify("three", phase=Phase.GATHERING, decision=_MISSING_FLOOR)
+    assert result.extraction.patches[0].value == 3
+
+
+def test_an_ordinal_word_answers_a_pending_integer_field():
+    """The other real shape a floor answer takes: "third", not "three"."""
+    result = classify("third", phase=Phase.GATHERING, decision=_MISSING_FLOOR)
+    assert result.extraction.patches[0].value == 3
+
+
+def test_ground_floor_resolves_to_zero():
+    result = classify("ground", phase=Phase.GATHERING, decision=_MISSING_FLOOR)
+    assert result.extraction.patches[0].value == 0
+
+
+def test_a_trailing_unit_noun_is_stripped_before_matching():
+    for utterance in ("third floor", "3 floors"):
+        assert classify(utterance, phase=Phase.GATHERING, decision=_MISSING_FLOOR) is not None
+    result = classify("two helpers", phase=Phase.GATHERING, decision=_MISSING_HELPERS)
+    assert result.extraction.patches[0].value == 2
 
 
 # --- no fast path for TEXT / DATE answer types ------------------------------

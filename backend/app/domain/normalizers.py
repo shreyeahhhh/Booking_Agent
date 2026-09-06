@@ -119,7 +119,12 @@ _WINDOW_KEYWORDS = {
     "tonight": TimeWindow.NIGHT,
 }
 
-_NUMBER_WORDS = {
+# Public (not _-prefixed): conversation/fastpath.py reuses this for its own
+# bare-number matching (step 3.4) rather than hand-typing a second copy of
+# the same word list. "zero" is included for that reuse -- a floor answer of
+# "zero" or "ground" is real, unlike a time phrase ever saying "half past zero".
+NUMBER_WORDS = {
+    "zero": 0,
     "one": 1,
     "two": 2,
     "three": 3,
@@ -137,7 +142,7 @@ _NUMBER_WORDS = {
 _HHMM = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm)?\b")
 _H_AMPM = re.compile(r"\b(\d{1,2})\s*(am|pm)\b")
 _HALF_QUARTER = re.compile(
-    r"\b(half|quarter)\s+(past|to)\s+(\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")\b"
+    r"\b(half|quarter)\s+(past|to)\s+(\d{1,2}|" + "|".join(NUMBER_WORDS) + r")\b"
 )
 
 
@@ -195,7 +200,7 @@ def resolve_time_of_day(phrase: str) -> TimeResolution:
     match = _HALF_QUARTER.search(text)
     if match:
         unit, direction, hour_word = match.groups()
-        base_hour = int(hour_word) if hour_word.isdigit() else _NUMBER_WORDS[hour_word]
+        base_hour = int(hour_word) if hour_word.isdigit() else NUMBER_WORDS[hour_word]
         minute = 30 if unit == "half" else 15
         if direction == "to":
             base_hour -= 1
@@ -234,7 +239,7 @@ def resolve_quantity_word(phrase: str) -> int | None:
     digits = re.search(r"\b(\d+)\b", text)
     if digits:
         return int(digits.group(1))
-    for word, number in _NUMBER_WORDS.items():
+    for word, number in NUMBER_WORDS.items():
         if re.search(rf"\b{word}\b", text):
             return number
     return None
