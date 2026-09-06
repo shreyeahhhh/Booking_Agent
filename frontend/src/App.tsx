@@ -9,6 +9,13 @@ type Turn = { speaker: "you" | "relay"; text: string };
 
 type Row = { label: string; value: string; filled: boolean };
 
+// A free-tier host that spins down when idle can take tens of seconds to
+// serve the very first request -- MASTER_PLAN.md step 4.3. Below this, a
+// bare "Connecting…" reads as normal page-load latency; past it, silence
+// reads as broken, so the message switches to say plainly what is likely
+// happening instead of leaving the user guessing.
+const COLD_START_HINT_MS = 4_000;
+
 const MIME_EXTENSIONS: Record<string, string> = {
   "audio/webm": "webm",
   "audio/ogg": "ogg",
@@ -75,6 +82,7 @@ export default function App() {
   const [bookingState, setBookingState] = useState<BookingStateShape | null>(null);
   const [done, setDone] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [isSlowStart, setIsSlowStart] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const sessionRequestedRef = useRef(false);
 
@@ -109,14 +117,22 @@ export default function App() {
     if (sessionRequestedRef.current) return;
     sessionRequestedRef.current = true;
 
+    // A free host that spun down while idle can take tens of seconds to
+    // wake for this very first request -- see COLD_START_HINT_MS above.
+    // Cleared in both branches below, so a fast, ordinary response never
+    // shows the hint at all.
+    const coldStartTimer = window.setTimeout(() => setIsSlowStart(true), COLD_START_HINT_MS);
+
     createSession()
       .then((session) => {
+        window.clearTimeout(coldStartTimer);
         sessionIdRef.current = session.session_id;
         setSessionId(session.session_id);
         applyTurn(session);
         void speak(session.audio_chunks, session.tts_fallback, session.agent_text);
       })
       .catch(() => {
+        window.clearTimeout(coldStartTimer);
         setApiError("Could not reach the booking service. Refresh to try again.");
       });
   }, [applyTurn]);
@@ -367,7 +383,9 @@ export default function App() {
             <span className="footer__name">Relay</span>
           </div>
           {(apiError || (!sessionId && !apiError)) && (
-            <span className="footer__error mono">{apiError ?? "Connecting…"}</span>
+            <span className="footer__error mono">
+              {apiError ?? (isSlowStart ? "Waking up the server, hang tight…" : "Connecting…")}
+            </span>
           )}
         </div>
         <div className="footer__wordmark">Just say it</div>

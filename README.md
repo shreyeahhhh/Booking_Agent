@@ -6,10 +6,13 @@ corrections and ambiguity, and produces a structured booking summary for the use
 to review and confirm.
 
 > **Status: in development.** The deterministic core (Phase 1), the text conversation loop
-> (Phase 2), the full voice backend (Phase 3, steps 3.1-3.4), and the voice UI itself (3.5)
-> are built. The live state panel's correction history (3.6) and deployment (Phase 4) are
-> next; the live demo URL lands there. See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the exact
-> state of every step.
+> (Phase 2), the full voice backend and UI (Phase 3), and deployment resilience —
+> rate-limit backoff, a session TTL sweep, a cold-start UI state, and a verified
+> single-service `Dockerfile` (Phase 4) — are built. Still open: actually deploying to a
+> live host (the image is ready; picking and clicking through a specific one is the
+> remaining step), the live state panel's correction history (3.6), and Phase 5's
+> evaluation harness. See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the exact state of every
+> step.
 
 ## The idea in one sentence
 
@@ -184,8 +187,43 @@ cd frontend && npm run typecheck
 
 ## Deployment
 
-_Pending — Phase 4. A single service will serve the API and the built frontend bundle
-from one origin. The live URL lands here._
+**Live URL:** _pending — the image is ready to deploy (below); this line gets the real
+link once it's live on a host._
+
+A single-stage [`Dockerfile`](Dockerfile) at the repo root builds the frontend and
+serves it, plus the API, from one FastAPI process on one origin — the same
+single-service shape `app/main.py` and this README's "production shape locally"
+section above already run in dev. It works on any host that deploys from a
+Dockerfile (Render, Railway, Fly.io, Google Cloud Run, a plain VPS, ...); pick
+whichever is convenient. Verified locally (not just written and assumed): a fresh,
+isolated virtualenv installing only `requirements.txt`, then serving the real built
+`frontend/dist` through `uvicorn app.main:app` exactly as the image's `CMD` does,
+correctly returned both `/api/health` and the app's `index.html`.
+
+Whichever host is chosen:
+
+1. Point it at this repository with `Dockerfile` at the repo root as the build source
+   (no extra build command needed — the Dockerfile does the whole build).
+2. **Set every variable from [`.env.example`](.env.example) on that host's own
+   dashboard** — a local `.env` file is never read in production; this is the single
+   most common way a deployed demo silently fails (see the risk register in
+   [`MASTER_PLAN.md`](MASTER_PLAN.md)). `GROQ_API_KEY` is the only one that must be a
+   real value; the rest can keep their defaults.
+3. Most hosts inject their own `$PORT`; the Dockerfile already reads it
+   (`ENV PORT=8000` as a fallback for a plain `docker run`).
+4. After it deploys, open `https://<the-deployed-url>/api/health` directly and
+   confirm `llm_configured: true` — checkable from the live URL itself, not just
+   locally, precisely so a key set locally but forgotten on the host's dashboard is
+   caught immediately rather than discovered mid-demo.
+5. Open the deployed URL itself in a fresh browser profile and grant microphone
+   access — `getUserMedia` requires HTTPS everywhere except `localhost`, so this is
+   the first point this can be genuinely tested at all.
+
+Not yet done: cold-start behaviour (a free-tier host that spins down when idle can
+take tens of seconds to wake for the first request) has a UI state for it
+(`isSlowStart` in `App.tsx`) but has not been observed against a real cold host yet;
+session TTL sweeping (`SESSION_TTL_SECONDS`) is implemented but likewise only
+exercised by its unit tests so far, not a real multi-day-idle deployment.
 
 ## Assumptions and limitations
 

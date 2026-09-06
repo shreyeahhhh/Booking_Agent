@@ -10,9 +10,17 @@ and the silence-hallucination assumptions actually hold is test_stt_live.py.
 from unittest.mock import AsyncMock
 
 import groq
+import httpx
 import pytest
 
 from app.services.stt import _PROMPT_ECHO_PREFIXES, _has_repeated_word_loop, is_noise, transcribe
+
+
+def _rate_limit_error(headers: dict[str, str]) -> groq.RateLimitError:
+    request = httpx.Request("POST", "https://api.groq.com/x")
+    response = httpx.Response(429, headers=headers, request=request)
+    return groq.RateLimitError("rate limited", response=response, body=None)
+
 
 # --- is_noise ---------------------------------------------------------
 
@@ -158,3 +166,26 @@ async def test_a_non_retriable_error_propagates_instead_of_being_swallowed():
     )
     with pytest.raises(groq.AuthenticationError):
         await transcribe(client, model="m", audio=b"x", filename="a.webm")
+
+
+async def test_transcribe_waits_out_a_short_rate_limit_then_succeeds():
+    """A short Retry-After is worth spending part of the retry budget on --
+    see app/retry.py. The header names 0.01s so this test does not actually
+    pause for anything a human would notice."""
+    client = _mock_client(side_effects=[_rate_limit_error({"retry-after": "0.01"}), "third floor"])
+    result = await transcribe(client, model="m", audio=b"x", filename="a.webm")
+    assert result == "third floor"
+
+
+async def test_transcribe_gives_up_immediately_on_a_long_rate_limit_wait():
+    """No second attempt at all -- only one side_effect is provided, so a
+    wrongly-attempted retry would IndexError instead of quietly passing."""
+    client = _mock_client(side_effects=[_rate_limit_error({"retry-after": "999"})])
+    result = await transcribe(client, model="m", audio=b"x", filename="a.webm")
+    assert result is None
+
+
+async def test_transcribe_gives_up_immediately_when_no_retry_after_header_present():
+    client = _mock_client(side_effects=[_rate_limit_error({})])
+    result = await transcribe(client, model="m", audio=b"x", filename="a.webm")
+    assert result is None

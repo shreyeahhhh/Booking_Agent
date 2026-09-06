@@ -14,6 +14,7 @@ import json
 from unittest.mock import AsyncMock
 
 import groq
+import httpx
 import pytest
 
 from app.domain.state import (
@@ -51,6 +52,12 @@ _VALID_RESPONSE = json.dumps(
         "suggested_reply": None,
     }
 )
+
+
+def _rate_limit_error(headers: dict[str, str]) -> groq.RateLimitError:
+    request = httpx.Request("POST", "https://api.groq.com/x")
+    response = httpx.Response(429, headers=headers, request=request)
+    return groq.RateLimitError("rate limited", response=response, body=None)
 
 
 def _mock_client(*, side_effects) -> AsyncMock:
@@ -246,3 +253,34 @@ async def test_a_non_retriable_error_propagates_instead_of_being_swallowed():
             recent_turns=[],
             utterance="x",
         )
+
+
+async def test_extract_waits_out_a_short_rate_limit_then_succeeds():
+    client = _mock_client(
+        side_effects=[_rate_limit_error({"retry-after": "0.01"}), _VALID_RESPONSE]
+    )
+    result = await extract(
+        client, model="m", state=BookingState(), last_question=None, recent_turns=[], utterance="x"
+    )
+    assert result.patches[0].field == "pickup.locality"
+
+
+async def test_extract_falls_back_immediately_on_a_long_rate_limit_wait():
+    """No second attempt at all -- only one side_effect is provided, so a
+    wrongly-attempted retry would IndexError instead of quietly passing."""
+    client = _mock_client(side_effects=[_rate_limit_error({"retry-after": "999"})])
+    result = await extract(
+        client, model="m", state=BookingState(), last_question=None, recent_turns=[], utterance="x"
+    )
+    assert result == FALLBACK_RESULT
+
+
+async def test_extract_falls_back_when_the_repair_pass_itself_is_rate_limited():
+    """The repair pass (after a malformed first response) gets no extra
+    retry-after wait budget of its own -- a rate limit there is treated the
+    same as any other repair-pass failure: the safe fallback, not a raise."""
+    client = _mock_client(side_effects=["not json{{{", _rate_limit_error({"retry-after": "0.01"})])
+    result = await extract(
+        client, model="m", state=BookingState(), last_question=None, recent_turns=[], utterance="x"
+    )
+    assert result == FALLBACK_RESULT

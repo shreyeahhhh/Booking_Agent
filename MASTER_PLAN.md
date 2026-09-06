@@ -723,16 +723,93 @@ than skipped.
 
 **Deploy first thing in the morning, before any polish.**
 
-| # | Step | Acceptance |
-|---|---|---|
-| 4.1 | Single-service deploy (FastAPI serves the built frontend bundle) | Public HTTPS URL loads the app; `GROQ_API_KEY` and every other `.env.example` variable set on the **hosting platform's own dashboard**, not only in a local `.env` -- confirmed by `/api/health` reporting `llm_configured: true` on the deployed URL itself, not just locally |
-| 4.2 | Microphone works on the deployed origin | Verified in a fresh browser profile, over the deployed HTTPS URL (`getUserMedia` is blocked on plain HTTP everywhere except `localhost`, so this can only be genuinely verified post-deploy, not in local dev) |
-| 4.3 | Cold-start mitigation | Either a warm instance or an explicit "waking up" UI state |
-| 4.4 | Error handling pass | Every external call has a timeout, a retry and a spoken degraded fallback |
-| 4.5 | Session TTL sweep | Memory does not grow unbounded |
+| # | Step | Acceptance | Status |
+|---|---|---|---|
+| 4.1 | Single-service deploy (FastAPI serves the built frontend bundle) | Public HTTPS URL loads the app; `GROQ_API_KEY` and every other `.env.example` variable set on the **hosting platform's own dashboard**, not only in a local `.env` -- confirmed by `/api/health` reporting `llm_configured: true` on the deployed URL itself, not just locally | ⏳ Image built and locally verified (below); actually deploying to a chosen host is the remaining step |
+| 4.2 | Microphone works on the deployed origin | Verified in a fresh browser profile, over the deployed HTTPS URL (`getUserMedia` is blocked on plain HTTP everywhere except `localhost`, so this can only be genuinely verified post-deploy, not in local dev) | ⏳ Blocked on 4.1 by construction |
+| 4.3 | Cold-start mitigation | Either a warm instance or an explicit "waking up" UI state | ✅ UI state (`isSlowStart`) built; not yet observed against a real cold host |
+| 4.4 | Error handling pass | Every external call has a timeout, a retry and a spoken degraded fallback | ✅ Rate-limit backoff added (`app/retry.py`); timeout/retry/fallback already existed since phase 3 |
+| 4.5 | Session TTL sweep | Memory does not grow unbounded | ✅ |
 
 **Acceptance:** a link that a stranger can open and complete a booking through, and that
 degrades gracefully when STT, the LLM or TTS fails.
+
+**4.4 and 4.5 needed no live call to build -- both are pure, deterministic logic checkable
+by the suite -- but 4.4 specifically closes a gap this file flagged as future work in three
+separate places already** (services/tts.py's and services/stt.py's own comments, and the
+risk register's "a rate-limit retry can't help if the limit is a daily quota" row), so it
+is worth naming precisely now that it is actually done rather than deferred again.
+
+All three Groq-calling modules (`services/stt.py`, `services/tts.py`, `llm/extractor.py`)
+originally retried a `RateLimitError` the same way as any other transient failure:
+immediately, with no delay. Step 3.2's own live testing had already shown this cannot
+work for every cause of a 429 -- a real Orpheus tokens-per-day exhaustion reported "try
+again in 5h40m0s", which an instant, no-backoff retry cannot address at all, and *will*
+hit again identically. `app/retry.py` is a small, shared, pure function
+(`retry_after_seconds`) that reads the same `Retry-After` / `Retry-After-Ms` response
+headers Groq's own SDK already parses internally for its own built-in retry logic (this
+project's three modules replace that generic retry with their own domain-aware
+one-retry-then-fallback shape, so the SDK's handling of the header never runs) -- and
+caps how long it is willing to trust that header at 1 second, a deliberate choice given
+these calls sit inside a single voice turn against docs/architecture.md's ~2-3s *total*
+latency budget, not a batch job. A wait longer than that (or no header at all, e.g. a
+plain per-minute throttle with no machine-readable hint) skips the retry entirely and
+falls straight through to the existing, already-tested degraded fallback (`None` ->
+re-prompt / `speechSynthesis` fallback / `FALLBACK_RESULT`) rather than blocking a turn
+for a duration that would blow its latency budget on its own.
+
+`llm/extractor.py` needed a slightly larger change than the other two to wire this in:
+`_call()` previously swallowed every retriable error, including `RateLimitError`,
+internally and returned a uniform `None` -- hiding the actual exception (and its headers)
+from `extract()`'s own retry loop. Changed to let `RateLimitError` specifically propagate
+out of `_call()` so `extract()` can inspect it, while every other retriable error is still
+caught and flattened to `None` exactly as before. The repair pass's own single `_call()`
+site is deliberately *not* given its own retry-after wait budget on top of this -- it is
+already a second chance beyond the normal attempt budget, and a rate limit there is
+treated the same as any other repair-pass failure always was: the safe fallback, not a
+crash.
+
+**4.5's session store already carried `created_at`/`last_active` since step 3.4**,
+added specifically so this step would not need to restructure the module -- confirmed
+true. `store.create()` and `store.get()` both gained an optional `ttl_seconds` parameter
+(defaulting to `None`, i.e. every existing caller and test keeps the pre-4.5
+lives-forever behaviour unchanged) rather than reading `app.config` directly, for the
+same dependency-injection reason `api/routes.py`'s own `Settings` dependency exists --
+step 3.4 found a route reaching for `get_settings()` itself, instead of receiving it, was
+exactly what let a stale on-disk TTS cache silently invalidate a test, and TTL is the
+same shape of testability risk. `get()` evicts an individual expired session on access
+(so a session nobody ever recreates does not have to wait for someone else's `create()`
+to notice it), while `create()` additionally sweeps every other idle-expired session
+first, since new-session creation is the one call site guaranteed to run once per
+distinct visitor -- a single visitor's own later turns only ever update their *own*
+existing entry via `save()`, never add a new dict key -- which is exactly the point at
+which unbounded growth would actually accumulate. No background task or its own
+lifecycle needed.
+
+**4.1, 4.3: a Dockerfile was written and its logic verified locally, since this
+environment has no Docker daemon to build and run the image directly -- honestly
+incomplete rather than claimed as done.** The multi-stage build (Node stage compiles
+`frontend/dist`, copied into a Python 3.12-slim runtime stage alongside `backend/`)
+reproduces the exact repo-relative directory shape `app/main.py`'s own
+`FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"` depends on
+(two levels above `app/main.py`, i.e. one above `backend/`) -- verified by reasoning
+through the path arithmetic *and* by simulating it: a fresh, isolated virtualenv
+installing only `requirements.txt` (no compiler needed -- confirmed, not assumed, since
+`pydantic-core` and `uvicorn[standard]`'s `uvloop`/`httptools` all have prebuilt wheels
+for this platform), then running the Dockerfile's exact `CMD` (`uvicorn app.main:app
+--host 0.0.0.0 --port ${PORT}`) from a `backend/` working directory with the real built
+`frontend/dist` one level up, correctly served both `/api/health`
+(`llm_configured: true`, picked up from the real local `.env`) and the app's real
+`index.html` at `/`. `.dockerignore` excludes `.env` explicitly -- a real key must never
+be baked into an image layer that could end up pushed to a registry. What remains
+unverified here: the container build itself (the `node:20-slim` stage's `npm ci`, the
+multi-stage `COPY --from=`) and cold-start behaviour against a real spun-down instance,
+neither of which this sandboxed environment can exercise. README.md's Deployment section
+now gives concrete, host-agnostic steps (point any Docker-deploying host at the repo,
+set every `.env.example` variable on *that host's own dashboard*, check `/api/health` on
+the live URL) rather than the placeholder it held before -- picking a specific host and
+clicking through its own account/dashboard is a decision and an action that belongs to
+the user, not something to guess at or act on unprompted.
 
 **Deliberately not a checklist item, because it is already structurally impossible to get
 wrong: CORS.** README.md already states this plainly -- the Vite dev server proxies `/api` to
@@ -795,8 +872,8 @@ origin and protocol for free.
 | Groq free-tier limits (8k TPM / 200k TPD on the LLM) stall development | High | Add paid credit on Day 1. Whole-week spend is estimated under $5. |
 | **Orpheus TTS has its own, much tighter free-tier limit (3600 TPD)**, separate from the LLM's | High -- confirmed live in step 3.2, already partly consumed by that step's own testing | Synthesise sparingly during development (the audio cache means production usage is far lighter than test sweeps); add paid credit before phase 3's voice UI work needs repeated real synthesis |
 | **Submission-week evaluator load exceeds free-tier quota mid-review** -- several evaluators each running a few 2-3 minute conversations is a realistic multiple of any single tier's daily cap, and the confirmed 3600 TPD Orpheus ceiling above shows this is not hypothetical | High, once the demo link is actually shared | Before sending the submission email (7.4): move all three services (STT, LLM, TTS) to a paid-but-cheap tier for the review window, not just the LLM (this register's own "under $5" estimate above was a development-week estimate, not a multi-evaluator one). The response-template audio cache (3.2) means repeat phrases cost nothing after the first evaluator, which helps but does not eliminate the risk for the necessarily-unique parts of every conversation (localities, items). |
-| Cold start makes the demo look broken | High | Warm instance or explicit UI state (4.3) |
-| A rate-limit retry can't help if the limit is a daily quota, not a short one | Medium -- confirmed live in step 3.2 (a `RateLimitError` said "try again in 5h40m0s"; one immediate no-backoff retry cannot address that) | Flagged for phase 4.4's cross-cutting error-handling pass, not fixed piecemeal in one module |
+| Cold start makes the demo look broken | High | Explicit UI state built (4.3, `isSlowStart` in `App.tsx`); not yet observed against a real cold host, since that needs an actual deploy |
+| A rate-limit retry can't help if the limit is a daily quota, not a short one | Resolved in 4.4 -- confirmed live in step 3.2 (a `RateLimitError` said "try again in 5h40m0s"; one immediate no-backoff retry cannot address that) | `app/retry.py` reads the real `Retry-After` header and only retries when it names a short wait; otherwise falls straight through to the existing degraded fallback across all three Groq-calling modules |
 | A long spoken summary is tedious to listen to (not an Orpheus input-length problem -- step 3.2 found there is no enforced cap -- but a genuine UX one) | Medium | Sentence chunking for streamed playback; fall back to displaying the full written summary while speaking a condensed one |
 | VAD cuts the user off mid-sentence | Medium -- confirmed live: a fixed RMS threshold does not survive the browser's own automatic gain control across devices/rooms | Adaptive noise floor (phase 3.5 retroactive fix), not a hand-tuned constant; still needs real-microphone confirmation this environment cannot provide |
 | STT mangles Indian place names, especially less common local ones | Medium -- confirmed live: `_LOCALITY_PROMPT` measurably improves recognition (3/4 phrases in a controlled A/B) | Whisper `prompt` conditioning (phase 3.5 retroactive fix) alongside keeping `raw_text` verbatim; the prompt's own side effect (widened noise/silence hallucination, including a live-caught silent-corruption case) is mitigated but not eliminated -- see phase 3.5's write-up |

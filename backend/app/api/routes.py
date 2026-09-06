@@ -79,7 +79,7 @@ async def create_session(
     client: AsyncGroq = Depends(get_groq_client),  # noqa: B008 -- FastAPI's own DI idiom
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> SessionResponse:
-    session_id, session = store.create()
+    session_id, session = store.create(ttl_seconds=settings.session_ttl_seconds)
     store.save(session_id, replace(session, last_question=templates.GREETING))
 
     audio_chunks = await _synthesize(client, settings, templates.GREETING)
@@ -113,7 +113,7 @@ async def turn(
     client: AsyncGroq = Depends(get_groq_client),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> TurnResponse:
-    session = store.get(session_id)
+    session = store.get(session_id, ttl_seconds=settings.session_ttl_seconds)
     if session is None:
         raise HTTPException(
             status_code=404,
