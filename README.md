@@ -6,13 +6,12 @@ corrections and ambiguity, and produces a structured booking summary for the use
 to review and confirm.
 
 > **Status: in development.** The deterministic core (Phase 1), the text conversation loop
-> (Phase 2), the full voice backend and UI (Phase 3), and deployment resilience —
-> rate-limit backoff, a session TTL sweep, a cold-start UI state, and a verified
-> single-service `Dockerfile` (Phase 4) — are built. Still open: actually deploying to a
-> live host (the image is ready; picking and clicking through a specific one is the
-> remaining step), the live state panel's correction history (3.6), and Phase 5's
-> evaluation harness. See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the exact state of every
-> step.
+> (Phase 2), the full voice backend and UI including live correction history (Phase 3),
+> and deployment resilience — rate-limit backoff, a session TTL sweep, a cold-start UI
+> state, and a verified single-service `Dockerfile` (Phase 4) — are built. Still open:
+> actually deploying to a live host (the image is ready; picking and clicking through a
+> specific one is the remaining step) and Phase 5's evaluation harness. See
+> [`MASTER_PLAN.md`](MASTER_PLAN.md) for the exact state of every step.
 
 ## The idea in one sentence
 

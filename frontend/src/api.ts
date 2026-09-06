@@ -11,13 +11,29 @@ export type SessionResponse = {
   tts_fallback: boolean;
 };
 
+export type FieldStatus = "empty" | "provided" | "inferred" | "ambiguous" | "confirmed";
+
+/** One domain.state.Revision as JSON: a value a field held before a
+ * correction replaced it. `evidence`/`turn` are carried for completeness
+ * (mirroring the backend model exactly) even though the live state panel's
+ * "(was: X)" rendering only needs `value`. */
+export type Revision<T> = {
+  value: T | null;
+  status: FieldStatus;
+  evidence: string | null;
+  turn: number | null;
+};
+
 /** One Field[T] as BookingState.model_dump(mode="json") serialises it.
- * Only the keys this UI actually reads are typed -- the real shape carries
- * confidence/evidence/turn/etc. too, which the live state panel does not
- * need. */
+ * Only the keys this UI actually reads are typed -- the real shape also
+ * carries confidence/clarify_attempts/ambiguity, which the live state panel
+ * does not need. `revisions` is what lets a correction render as
+ * "Kakkanad (was: Kochi)" instead of silently overwriting the old value --
+ * see MASTER_PLAN.md step 3.6. */
 export type FieldValue<T> = {
   value: T | null;
-  status: "empty" | "provided" | "inferred" | "ambiguous" | "confirmed";
+  status: FieldStatus;
+  revisions: Array<Revision<T>>;
 };
 
 export type BookingStateShape = {

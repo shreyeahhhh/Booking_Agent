@@ -324,7 +324,7 @@ acceptance criterion, live, not simulated.
 | 3.3 | Fast-path classifier | `conversation/fastpath.py` | ✅ Yes/no, meta-commands, bare numerics. **Fails open to the LLM.** |
 | 3.4 | `/turn` endpoint | `api/routes.py` | ✅ Orchestrates STT → fastpath/extract → reduce → policy → template → TTS. |
 | 3.5 | Voice UI | `frontend/src/` | ✅ Mic button, VAD silence detection (~700ms), audio playback, transcript. Calls the API by relative path (`/api/turn`, `/api/session`), never a hardcoded origin -- see Phase 4's CORS/HTTPS note above for why that single choice matters for both. |
-| 3.6 | Live state panel | `frontend/src/` | ⏳ Fields fill as they are captured (built alongside 3.5 -- see findings below); corrections rendering as `Kakkanad (was: Kochi)` specifically is not wired up yet. This is the evidence exhibit for the whole architecture. |
+| 3.6 | Live state panel | `frontend/src/` | ✅ Fields fill as they are captured (built alongside 3.5); corrections now render as `Kakkanad (was: Kochi)` -- see findings below. This is the evidence exhibit for the whole architecture. |
 
 **Acceptance:** a complete booking spoken end to end on localhost, under ~2.5s per turn.
 
@@ -621,6 +621,39 @@ started for preview; the backend entry runs through `cmd /c cd ... &&` rather th
 directory that `config.py`'s `.env` resolution depends on -- found by the exact same "real
 key configured locally, backend reports it as missing" symptom this project has now seen
 enough times to recognise immediately.
+
+**Step 3.6 turned out to need no backend change at all -- the data it needed was already
+being sent, just not modelled or read.** `api/routes.py`'s `/turn` and `/session` handlers
+already return `booking.model_dump(mode="json")` in full, and `Field[T].revisions` (a list
+of `{value, status, evidence, turn}`, pushed onto by `reducer.py`'s `_write_scalar` on
+every `op: correct`) was already inside that JSON, unused. Confirmed live rather than
+assumed, exactly this project's standing discipline: a script drove two real turns through
+the actual `_process_turn` pipeline with real synthesised speech ("I'm moving from Kochi to
+Whitefield." then "Actually, make that Kakkanad, not Kochi.") and printed the resulting
+`pickup.locality` JSON --
+`revisions: [{"value": "Kochi", "status": "ambiguous", "evidence": "from Kochi", "turn": 1}]`
+came back exactly as `domain/state.py`'s `Revision` model promises. `api.ts` gained a
+`Revision<T>` type and `FieldValue<T>.revisions`, both typed directly off that confirmed
+shape rather than guessed; `App.tsx` gained one small pure function, `displayValue()`,
+which formats a field's current value and appends `" (was: <previous>)"` when
+`revisions` is non-empty -- reading the *last* element specifically, since `revisions` is
+append-only and the last entry is the value immediately before the current one, not the
+first-ever value (`revisions[0]` would be that, and would be wrong after a second
+correction). Both the current and previous value are run through the *same* formatter
+(`prettify` for the vehicle type, the date formatter for the schedule date), so a
+corrected vehicle type reads "Tata Ace (was: Mini Truck)" rather than a raw enum sitting
+next to a prettified one. The combined "When" row (date + time window are two separate
+backend fields shown as one line) formats each half's correction independently, so a
+date-only correction and a time-only correction each surface in the right half of the
+line rather than being ambiguous about which one changed.
+
+Verified: `npm run typecheck` and `npm run build` both clean; the live probe above
+confirms the exact JSON contract this code now depends on; a browser regression check
+confirmed the app still loads and behaves identically on the common, no-correction-yet
+path (nothing regressed for the far more frequent case where a field was only ever stated
+once). Not verified, and cannot be here: the actual on-screen "(was: Kochi)" text in a
+real spoken correction, which needs a real microphone this environment does not have --
+the same limitation step 3.5 already hit and documented, not a new one.
 
 **Retroactively fixed after real-browser testing surfaced two problems step 3.5's own
 "verified as thoroughly as this environment allows" note had explicitly flagged as
