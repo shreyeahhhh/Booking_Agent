@@ -6,10 +6,10 @@ corrections and ambiguity, and produces a structured booking summary for the use
 to review and confirm.
 
 > **Status: in development.** The deterministic core (Phase 1), the text conversation loop
-> (Phase 2), and the full voice backend — STT, TTS, the fast-path classifier and the `/turn`
-> endpoint (Phase 3, steps 3.1-3.4) — are built and tested. The mic-and-playback UI (3.5-3.6)
-> and deployment (Phase 4) are next; the live demo URL lands there. See
-> [`MASTER_PLAN.md`](MASTER_PLAN.md) for the exact state of every step.
+> (Phase 2), the full voice backend (Phase 3, steps 3.1-3.4), and the voice UI itself (3.5)
+> are built. The live state panel's correction history (3.6) and deployment (Phase 4) are
+> next; the live demo URL lands there. See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the exact
+> state of every step.
 
 ## The idea in one sentence
 
