@@ -323,8 +323,8 @@ acceptance criterion, live, not simulated.
 | 3.2 | TTS service + audio cache | `services/tts.py` | ✅ Groq Orpheus. Sentence chunking (a self-imposed 200-char chunk size, not an enforced limit -- see findings below). Cache keyed by text hash. Browser `speechSynthesis` fallback flag. |
 | 3.3 | Fast-path classifier | `conversation/fastpath.py` | ✅ Yes/no, meta-commands, bare numerics. **Fails open to the LLM.** |
 | 3.4 | `/turn` endpoint | `api/routes.py` | ✅ Orchestrates STT → fastpath/extract → reduce → policy → template → TTS. |
-| 3.5 | Voice UI | `frontend/src/` | Mic button, VAD silence detection (~700ms), audio playback, transcript. Calls the API by relative path (`/api/turn`, `/api/session`), never a hardcoded origin -- see Phase 4's CORS/HTTPS note above for why that single choice matters for both. |
-| 3.6 | Live state panel | `frontend/src/` | Fields fill as they are captured; corrections render as `Kakkanad (was: Kochi)`. This is the evidence exhibit for the whole architecture. |
+| 3.5 | Voice UI | `frontend/src/` | ✅ Mic button, VAD silence detection (~700ms), audio playback, transcript. Calls the API by relative path (`/api/turn`, `/api/session`), never a hardcoded origin -- see Phase 4's CORS/HTTPS note above for why that single choice matters for both. |
+| 3.6 | Live state panel | `frontend/src/` | ⏳ Fields fill as they are captured (built alongside 3.5 -- see findings below); corrections rendering as `Kakkanad (was: Kochi)` specifically is not wired up yet. This is the evidence exhibit for the whole architecture. |
 
 **Acceptance:** a complete booking spoken end to end on localhost, under ~2.5s per turn.
 
@@ -552,6 +552,75 @@ looked right.
 numeric-matcher description); `MASTER_PLAN.md`'s own step 3.3 entry above corrected rather
 than silently edited, per this file's own convention of recording what was believed and what
 was actually found.
+
+**Step 3.5 started from a real design, not a blank page.** A landing-page mockup (Claude
+Design's own `.dc.html` export format -- a self-decompressing bundle of gzipped/base64 assets,
+not plain HTML) was decoded with a small script that replicates its own bootstrap logic
+(base64-decode, gunzip, extract the `__bundler/manifest` and `__bundler/template` script
+tags) rather than trying to execute the bundle's JS directly. That surfaced the actual page
+structure, copy, colours (`#F1ECE3` cream / `#111110` ink / `#FF3D1F` orange / `#D9F25E`
+lime), and fonts (Bricolage Grotesque, Geist Mono) cleanly, plus a scripted fake demo
+conversation showing the intended interaction shape. Rebuilt as real React/TS
+(`frontend/src/App.tsx`, `styles.css`, `api.ts`, `audio.ts`, `useRecorder.ts`) rather than
+embedding the mockup's own template-DSL runtime, since that format has no relationship to
+this project's actual Vite/React stack -- the fake scripted conversation was replaced with
+real `POST /api/session` / `POST /api/turn` calls end to end.
+
+Mic capture uses `MediaRecorder` gated by an independent Web Audio API voice-activity check
+(`useRecorder.ts`): silence is only measured *after* real speech is first detected, so a
+thoughtful pause before speaking is never mistaken for "finished talking" -- an easy mistake
+a naive amplitude-threshold VAD makes, caught by reasoning through the sequence before
+writing it, not after. A max-recording safety timeout guards against VAD never firing at all
+(background noise). The RMS silence threshold is a constant flagged for by-ear tuning against
+a real microphone, per docs/test-plan.md's manual checklist -- this environment cannot grant
+microphone access to verify it (see below).
+
+**The most significant bug here needed a real browser to find, the same pattern as step
+3.4's numeric fast-path gap.** The first version guarded `POST /api/session` against React
+19 StrictMode's dev-only mount-cleanup-remount cycle with a ref flag (to stop it from firing
+twice) paired with the standard `cancelled`-on-cleanup pattern (to stop a stale response from
+updating state). Those two idioms actively fight each other here: StrictMode's simulated
+cleanup still runs once between the two invocations regardless of the ref guard, so the
+`cancelled` flag it sets discards the response from the *one real request* the guard
+correctly allowed through. The network tab showed a correct 200 with the right greeting text;
+the UI never showed it. Fixed by dropping the `cancelled` pattern entirely -- it was solving
+a problem (a genuine unmount) this root, un-routed component never actually has, and fighting
+a problem (StrictMode's simulated remount) it was never designed to handle. Caught by loading
+the real page in a browser and watching the greeting simply never appear, not by reading the
+code -- the same "drive it for real" discipline as every other step, applied to the frontend
+for the first time.
+
+**Verified as thoroughly as this environment allows, and no further:** the in-app preview
+pane cannot grant microphone access (confirmed directly -- it reports the request and blocks
+it), and Claude in Chrome was unavailable this session, so real mic capture and VAD timing
+are unverified pending the manual checklist on a real device. Everything else was verified
+live: the static design against the decoded mockup pixel-for-pixel; session bootstrap with
+real Orpheus-synthesised greeting audio; a full `/api/turn` round trip through the actual
+browser `fetch`/`FormData` code path (a synthetic silent WAV, correctly classified as noise
+server-side and correctly re-prompting client-side, with zero LLM calls); the mic-permission-
+denied error path rendering correctly instead of crashing; and both `npm run typecheck` and
+`npm run build` clean.
+
+**Found and fixed one more thing along the way, in already-committed local state rather than
+code:** the real `backend/.tts_cache/` directory had six stale 9-byte files
+(`base64("wav-bytes")`) left over from iterating on step 3.4's tests before their cache-dir
+isolation fix landed -- caught when the live greeting audio came back suspiciously small and
+decoded to literal mock bytes. The committed test suite was already correct (verified by the
+passing tests); this was leftover local dev-environment state, not a code defect, cleaned up
+by deleting the stale entries. `.tts_cache/` is gitignored, so nothing here was ever at risk
+of being committed.
+
+**Not done in this step, flagged for 3.6 explicitly rather than silently rolled in:** the
+live state panel's "corrections render as `Kakkanad (was: Kochi)`" requirement needs
+`Field[T].revisions` (already in every backend response's `state`) surfaced in the UI --
+`api.ts`'s current `FieldValue<T>` type deliberately only models `value`/`status`, the
+minimum 3.5 needed. `.claude/launch.json` created at the workspace root (one level above this
+repo, where the preview tool actually looks) so `backend`/`frontend` dev servers can be
+started for preview; the backend entry runs through `cmd /c cd ... &&` rather than
+`--app-dir`, since `--app-dir` only changes uvicorn's import path, not the process's working
+directory that `config.py`'s `.env` resolution depends on -- found by the exact same "real
+key configured locally, backend reports it as missing" symptom this project has now seen
+enough times to recognise immediately.
 
 ---
 
