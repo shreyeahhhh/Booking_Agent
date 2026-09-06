@@ -1,61 +1,61 @@
-"""Text-to-speech and its audio cache -- MASTER_PLAN.md step 3.2.
+"""Text-to-speech and its audio cache -- MASTER_PLAN.md step 3.2, moved to
+Cartesia in a later pass.
 
 Three pieces, same separation of concerns as services/stt.py:
 
 - `chunk_text()` is pure: split a response into pieces no longer than
   `_MAX_CHARS`, packing whole sentences greedily rather than emitting one
-  chunk per sentence. Fully unit-testable with no mocking.
-- `_synthesize_chunk()` is thin I/O: one chunk of text -> WAV bytes, same
-  timeout/retry/never-raise-for-transient-failures shape as extractor.py
-  and stt.py.
+  chunk per sentence. Fully unit-testable with no mocking. Provider-agnostic,
+  unchanged since this module's original Groq/Orpheus implementation.
+- `_synthesize_chunk()` is thin I/O: one chunk of text -> WAV audio bytes,
+  same timeout/retry/never-raise-for-transient-failures shape as
+  extractor.py and stt.py, calling Cartesia's REST API directly via
+  `httpx.AsyncClient` rather than a vendor SDK (Cartesia's own Python SDK
+  exists but is not a dependency here -- httpx is already pulled in
+  transitively by `groq`, and the wire contract is a single, simple JSON
+  POST with no benefit to wrapping it further for this project's needs).
 - `synthesize()` composes the two with an on-disk cache keyed by a hash of
   (model, voice, text): architecture.md's "Pre-synthesised template audio
   cache" -- because agent responses are built from a small set of fixed
   phrases (see conversation/templates.py), a repeated phrase is served from
   disk with zero API calls after the first time it is ever spoken.
 
-`_MAX_CHARS = 200` is a *self-imposed* chunk size, not an API-enforced one --
-that correction itself came from live testing, worth recording because it
-reversed an earlier belief documented in MASTER_PLAN.md. Groq's own Orpheus
-doc page states "max 200 characters," and a first pass here took that as a
-hard validation limit. A live sweep once the account's model-terms block was
-cleared showed the API happily accepts 1000+ characters with no length
-complaint at all -- the wall that eventually appears is the account's daily
-token budget (`RateLimitError`, "tokens per day (TPD)"), not a per-request
-size check. Chunking is still the right call for two *different*, still-valid
-reasons: architecture.md's own latency mitigation ("stream TTS, play the
-first chunk immediately"), and this project's free tier has a materially
-tight TPD budget (see MASTER_PLAN.md's risk register) -- small, cacheable,
-reusable chunks spend that budget more slowly than large ones would.
+Cartesia, not Groq Orpheus: Orpheus's free tier is 3600 tokens/*day*, and live
+testing during this project's own development exhausted it more than once from
+ordinary use, well before any real evaluator ever saw the deploy -- a genuine
+risk for a submission whose entire point is a human testing the live link. See
+MASTER_PLAN.md for the full comparison and the reasoning behind the switch.
+`client` here is a plain `httpx.AsyncClient`, not the `AsyncGroq` client
+`services/stt.py`/`llm/extractor.py` still use -- STT and the LLM stayed on
+Groq (confirmed live to not share Orpheus's fragile daily cap; see
+MASTER_PLAN.md), so this module now depends on a second, independent
+credential (`Settings.cartesia_api_key`) that is allowed to be entirely
+absent without blocking a turn -- see `Settings.cartesia_is_configured` and
+`synthesize()` below, which treat "not configured" exactly like "the API
+call failed": skip straight to the caller's existing None -> speechSynthesis
+fallback, never a hard error.
 
-Verified live before writing this, not assumed: an early web search on the
-character question turned up a conflicting "10K characters" claim from a
-stale/unrelated page, and the terms-acceptance block (below) took an actual
-live call to discover -- neither was visible from reading documentation
-alone. This project's Groq org had not accepted Orpheus's model terms
-either, so every call initially returned a 400 with code
-`model_terms_required`; an org admin visiting
-https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english
-resolved it. That 400 was structural, not transient -- six different
-requests (different lengths, different formats, an invalid voice) all
-produced the identical error, the same "retrying cannot help" signature
-services/stt.py already established for a 400 on an audio endpoint.
-test_tts_live.py detects and skips on that error specifically, so a
-not-yet-accepted account fails clearly rather than confusingly.
+`_MAX_CHARS = 200` is a *self-imposed* chunk size (Cartesia has no comparable
+per-request character limit either, per its own docs), kept for the two
+reasons that were always independent of Orpheus specifically:
+architecture.md's own latency mitigation ("stream TTS, play the first chunk
+immediately"), and spending any provider's finite free-tier budget in small,
+cacheable, reusable pieces rather than large ones.
 
 Returns a *list* of WAV byte-strings, one per chunk, deliberately not
-concatenated into one file: WAV's header encodes a single length, so naively
-gluing multiple complete WAV files together produces a malformed file. This
-also matches architecture.md's own latency mitigation -- "stream TTS, play
-the first chunk immediately" -- rather than fighting it: the caller can start
-playing chunk 0 while chunk 1 is still being synthesised.
+concatenated into one file: WAV's header encodes a length, so naively gluing
+multiple WAV files together produces a malformed file. Cartesia's own WAV
+output uses the streaming convention of an unknown-length sentinel
+(0xFFFFFFFF) in both the RIFF and data chunk size fields rather than the
+real byte count -- confirmed live before trusting it, not assumed: a saved
+response loaded and played correctly in a real browser `<audio>` element
+(the exact mechanism frontend/src/audio.ts uses), reaching `ended` with a
+correct, non-infinite `duration` despite the sentinel header.
 
 A `None` return (from `synthesize()` or `_synthesize_chunk()`) means the
 same thing services/stt.py's `None` does: TTS is unavailable right now, and
 the caller (the /turn endpoint, step 3.4) should fall back to the browser's
-`speechSynthesis` API rather than play nothing. That fallback decision itself
-belongs to the endpoint, not this module -- there is nothing left for a
-dedicated "flag" type to carry beyond the None this module already returns.
+`speechSynthesis` API rather than play nothing.
 """
 
 from __future__ import annotations
@@ -66,8 +66,7 @@ import logging
 import re
 from pathlib import Path
 
-import groq
-from groq import AsyncGroq
+import httpx
 
 from app.retry import retry_after_seconds
 
@@ -75,30 +74,19 @@ log = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 15
 _MAX_ATTEMPTS = 2  # one call + one retry, for transient failures only
-_MAX_CHARS = 200  # self-imposed chunk size, not an API-enforced limit -- see module docstring
-_RESPONSE_FORMAT = "wav"  # the only format Orpheus supports (other Groq TTS
-# models accept flac/mp3/mulaw/ogg too; Orpheus's own docs page does not)
+_MAX_CHARS = 200  # self-imposed chunk size -- see module docstring
 
-# Same reasoning as services/stt.py: a 400 here (bad voice, terms not yet
-# accepted) is structural, not transient -- verified live, see the module
-# docstring -- so it is deliberately excluded and left to propagate rather
-# than retried or swallowed into a None fallback.
-#
-# RateLimitError is retried here, but not blindly: a live TPD (tokens-per-day)
-# exhaustion during this step's own testing showed "might be transient" does
-# not hold for every rate-limit cause -- the error said "try again in
-# 5h40m0s", which one immediate, no-backoff retry cannot help with at all.
-# app.retry.retry_after_seconds (phase 4.4) reads the same Retry-After header
-# Groq's own SDK parses internally, and _synthesize_chunk below only retries
-# when it names a short enough wait to be worth spending inside one voice
-# turn's latency budget -- otherwise this falls straight through to the
-# existing, already-tested None -> speechSynthesis-fallback path instead of
-# waiting out a duration that would blow the turn's budget anyway.
-_RETRIABLE_ERRORS = (
-    groq.APIConnectionError,  # also covers APITimeoutError, a subclass
-    groq.RateLimitError,
-    groq.InternalServerError,
-)
+_API_VERSION = "2026-08-14"  # required header; confirmed live, the only version offered
+_OUTPUT_FORMAT = {"container": "wav", "encoding": "pcm_s16le", "sample_rate": 44100}
+
+# A 4xx other than 429 (bad API key, an unknown voice/model id, a malformed
+# request) is structural -- the same "retrying an identical request cannot
+# help" reasoning services/stt.py already applies to its own 400s -- so it is
+# deliberately left to propagate rather than retried or swallowed. 429 and 5xx
+# are handled separately below: a 429 only retries when Cartesia names a short
+# enough wait (app.retry), and a 5xx gets one blind retry as a plain transient
+# fault, the same budget every other Groq-calling module in this project uses.
+_RETRIABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
@@ -149,8 +137,8 @@ def _hard_split(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _cache_key(text: str, *, model: str, voice: str) -> str:
-    digest_input = f"{model}\x1f{voice}\x1f{text}".encode()
+def _cache_key(text: str, *, model: str, voice_id: str) -> str:
+    digest_input = f"{model}\x1f{voice_id}\x1f{text}".encode()
     return hashlib.sha256(digest_input).hexdigest()
 
 
@@ -159,41 +147,57 @@ def _cache_path(cache_dir: Path, key: str) -> Path:
 
 
 async def _synthesize_chunk(
-    client: AsyncGroq,
+    client: httpx.AsyncClient,
     *,
     model: str,
-    voice: str,
+    voice_id: str,
     text: str,
 ) -> bytes | None:
     """One chunk of text (<= _MAX_CHARS) -> WAV audio bytes. Never raises
-    for a retriable failure; see module docstring for why a 400 propagates
-    instead of being retried or swallowed."""
+    for a retriable failure; see module docstring for why a structural 4xx
+    propagates instead of being retried or swallowed."""
     last_error: Exception | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            response = await client.audio.speech.create(
-                model=model,
-                voice=voice,
-                input=text,
-                response_format=_RESPONSE_FORMAT,
+            response = await client.post(
+                "/tts/bytes",
+                json={
+                    "model_id": model,
+                    "transcript": text,
+                    "voice": voice_id,
+                    "language": "en",
+                    "output_format": _OUTPUT_FORMAT,
+                },
                 timeout=_TIMEOUT_SECONDS,
             )
-            return await response.read()
-        except groq.RateLimitError as err:
-            last_error = err
-            wait = retry_after_seconds(err)
-            if wait is None:
-                log.warning(
-                    "tts call rate-limited (attempt %d), no short retry-after: %s",
-                    attempt + 1,
-                    err,
+            if response.status_code == 429:
+                last_error = httpx.HTTPStatusError(
+                    "rate limited", request=response.request, response=response
                 )
-                break
+                wait = retry_after_seconds(response)
+                if wait is None:
+                    log.warning(
+                        "tts call rate-limited (attempt %d), no short retry-after", attempt + 1
+                    )
+                    break
+                log.warning(
+                    "tts call rate-limited (attempt %d), retrying in %.2fs", attempt + 1, wait
+                )
+                await asyncio.sleep(wait)
+                continue
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPStatusError as err:
+            if err.response.status_code not in _RETRIABLE_STATUS:
+                raise  # structural 4xx: bad key, bad voice/model id, malformed request
+            last_error = err
             log.warning(
-                "tts call rate-limited (attempt %d), retrying in %.2fs: %s", attempt + 1, wait, err
+                "tts call failed (attempt %d): HTTP %d: %s",
+                attempt + 1,
+                err.response.status_code,
+                err,
             )
-            await asyncio.sleep(wait)
-        except _RETRIABLE_ERRORS as err:
+        except (httpx.ConnectError, httpx.TimeoutException) as err:
             last_error = err
             log.warning(
                 "tts call failed (attempt %d): %s: %s", attempt + 1, type(err).__name__, err
@@ -203,17 +207,17 @@ async def _synthesize_chunk(
 
 
 async def _get_or_synthesize_chunk(
-    client: AsyncGroq,
+    client: httpx.AsyncClient,
     *,
     model: str,
-    voice: str,
+    voice_id: str,
     text: str,
     cache_dir: Path,
 ) -> bytes | None:
-    path = _cache_path(cache_dir, _cache_key(text, model=model, voice=voice))
+    path = _cache_path(cache_dir, _cache_key(text, model=model, voice_id=voice_id))
     if path.exists():
         return path.read_bytes()
-    audio = await _synthesize_chunk(client, model=model, voice=voice, text=text)
+    audio = await _synthesize_chunk(client, model=model, voice_id=voice_id, text=text)
     if audio is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         path.write_bytes(audio)
@@ -221,14 +225,20 @@ async def _get_or_synthesize_chunk(
 
 
 async def synthesize(
-    client: AsyncGroq,
+    client: httpx.AsyncClient | None,
     *,
     model: str,
-    voice: str,
+    voice_id: str,
     text: str,
     cache_dir: Path,
 ) -> list[bytes] | None:
     """One agent response -> a list of playable WAV chunks, in order.
+
+    `client` is None exactly when `Settings.cartesia_is_configured` is
+    False -- treated identically to any other TTS failure (returns None
+    immediately, no attempt made) rather than raising, so a deploy missing
+    only the optional Cartesia key still speaks via the browser fallback
+    instead of erroring.
 
     Each chunk is cached independently, keyed by its own exact text, so a
     repeated fixed phrase across turns or sessions costs one API call ever,
@@ -236,19 +246,19 @@ async def synthesize(
     at a time -- a multi-chunk response (the final booking summary readback
     is the common case actually long enough to span more than one chunk)
     otherwise pays the full per-chunk network latency once per chunk instead
-    of once total, a real, measurable tax on the ~2.5s turn-latency target
-    docs/test-plan.md's manual checklist holds this project to. Returns None
-    if any chunk could not be synthesised -- the caller should fall back to
-    the browser's speechSynthesis for the whole response rather than play a
-    partial one.
+    of once total. Returns None if any chunk could not be synthesised -- the
+    caller should fall back to the browser's speechSynthesis for the whole
+    response rather than play a partial one.
     """
+    if client is None:
+        return None
     chunks = chunk_text(text)
     if not chunks:
         return []
     results = await asyncio.gather(
         *(
             _get_or_synthesize_chunk(
-                client, model=model, voice=voice, text=chunk, cache_dir=cache_dir
+                client, model=model, voice_id=voice_id, text=chunk, cache_dir=cache_dir
             )
             for chunk in chunks
         )

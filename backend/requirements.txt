@@ -6,3 +6,8 @@ pydantic-settings==2.15.0
 python-dateutil==2.9.0.post0
 python-multipart==0.0.32
 groq==1.7.0
+# Cartesia TTS is called via its raw REST API (services/tts.py), not its own
+# SDK -- httpx was already an installed transitive dependency of groq, but a
+# direct dependency now needs pinning explicitly rather than riding on
+# whatever version groq happens to require.
+httpx==0.28.1

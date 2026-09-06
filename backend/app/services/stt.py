@@ -239,7 +239,7 @@ async def transcribe(
             return response.text
         except groq.RateLimitError as err:
             last_error = err
-            wait = retry_after_seconds(err)
+            wait = retry_after_seconds(err.response)
             if wait is None:
                 log.warning(
                     "stt call rate-limited (attempt %d), no short retry-after: %s",

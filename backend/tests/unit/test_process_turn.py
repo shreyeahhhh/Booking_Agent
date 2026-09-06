@@ -8,10 +8,14 @@ directly is far more precise than only exercising it through a real HTTP
 request -- see test_api_turn.py for the complementary "does the endpoint
 actually wire this up" check.
 
-One mocked AsyncGroq stands in for all three Groq APIs a single turn can
-touch (transcription, chat completion, speech), with call counters so a
-test can assert not just "the right output" but "the right APIs were even
-called" -- e.g. that a noise transcript truly never reaches the LLM.
+Two mocked clients now, not one: a mocked AsyncGroq for the two Groq APIs a
+turn can still touch (transcription, chat completion), and a separate mocked
+httpx.AsyncClient standing in for Cartesia's TTS endpoint -- services/tts.py
+moved off Groq's own Orpheus TTS (MASTER_PLAN.md), so the two are
+independent credentials/clients now, not one shared one. Each has its own
+call counter, so a test can assert not just "the right output" but "the
+right APIs were even called" -- e.g. that a noise transcript truly never
+reaches the LLM.
 
 Every test gets its own `tts_cache_dir` (pytest's `tmp_path`), never the
 real configured one: services/tts.py caches to disk by text hash, and two
@@ -63,8 +67,8 @@ def settings(tmp_path):
     return get_settings().model_copy(update={"tts_cache_dir": tmp_path})
 
 
-def _mock_client(*, stt_text=None, llm_content=None, tts_bytes=b"wav-bytes"):
-    calls = {"stt": 0, "llm": 0, "tts": 0}
+def _mock_client(*, stt_text=None, llm_content=None):
+    calls = {"stt": 0, "llm": 0}
     client = AsyncMock()
 
     async def transcribe(**_kwargs):
@@ -77,15 +81,28 @@ def _mock_client(*, stt_text=None, llm_content=None, tts_bytes=b"wav-bytes"):
         response.choices = [AsyncMock(message=AsyncMock(content=llm_content))]
         return response
 
-    async def speech_create(**_kwargs):
-        calls["tts"] += 1
-        response = AsyncMock()
-        response.read = AsyncMock(return_value=tts_bytes)
-        return response
-
     client.audio.transcriptions.create = transcribe
     client.chat.completions.create = chat_create
-    client.audio.speech.create = speech_create
+    client.calls = calls
+    return client
+
+
+def _mock_cartesia_client(*, wav_bytes: bytes = b"wav-bytes"):
+    """A working Cartesia client by default -- most tests here are not about
+    TTS at all, so they should see the normal, unremarkable case (audio
+    comes back) rather than every test having to opt in to success."""
+    calls = {"tts": 0}
+    client = AsyncMock()
+
+    async def post(*_args, **_kwargs):
+        calls["tts"] += 1
+        response = AsyncMock()
+        response.status_code = 200
+        response.content = wav_bytes
+        response.raise_for_status = lambda: None
+        return response
+
+    client.post = post
     client.calls = calls
     return client
 
@@ -100,16 +117,21 @@ def _session(*, phase=Phase.GATHERING, decision=None, last_question=None) -> Ses
 
 async def test_empty_audio_produces_a_reprompt_with_no_api_calls_at_all(settings):
     client = _mock_client()
+    cartesia_client = _mock_cartesia_client()
     session = _session(last_question="What floor is the pickup on?")
-    outcome = await _process_turn(client, settings, session, b"", "audio.webm")
+    outcome = await _process_turn(client, cartesia_client, settings, session, b"", "audio.webm")
     assert outcome.agent_text == "Sorry, I didn't catch that. What floor is the pickup on?"
-    assert client.calls == {"stt": 0, "llm": 0, "tts": 1}  # the re-prompt itself is still spoken
+    assert client.calls == {"stt": 0, "llm": 0}
+    assert cartesia_client.calls["tts"] == 1  # the re-prompt itself is still spoken
 
 
 async def test_a_noise_hallucination_produces_a_reprompt_with_no_llm_call(settings):
     client = _mock_client(stt_text=" Thank you.")
+    cartesia_client = _mock_cartesia_client()
     session = _session(last_question="Which city are you moving to?")
-    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
     assert outcome.agent_text == "Sorry, I didn't catch that. Which city are you moving to?"
     assert client.calls["llm"] == 0
     assert outcome.session is session  # nothing about the conversation changed
@@ -138,8 +160,11 @@ async def test_malformed_audio_produces_a_reprompt_instead_of_a_raw_500(settings
             body={"error": {"code": "invalid_media_file"}},
         )
     )
+    cartesia_client = _mock_cartesia_client()
     session = _session(last_question="Where are you moving from?")
-    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
     assert outcome.agent_text == "Sorry, I didn't catch that. Where are you moving from?"
     assert client.calls["llm"] == 0
 
@@ -149,9 +174,12 @@ async def test_malformed_audio_produces_a_reprompt_instead_of_a_raw_500(settings
 
 async def test_repeat_replays_the_last_question_verbatim_with_no_llm_call(settings):
     client = _mock_client(stt_text="repeat that")
+    cartesia_client = _mock_cartesia_client()
     decision = SlotDecision("pickup.floor", "pickup floor", SlotReason.MISSING)
     session = _session(last_question="Which floor is the pickup on?", decision=decision)
-    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
     assert outcome.agent_text == "Which floor is the pickup on?"
     assert client.calls["llm"] == 0
     assert outcome.session is session
@@ -159,8 +187,11 @@ async def test_repeat_replays_the_last_question_verbatim_with_no_llm_call(settin
 
 async def test_restart_resets_the_conversation_to_the_greeting(settings):
     client = _mock_client(stt_text="start over")
+    cartesia_client = _mock_cartesia_client()
     mid_booking = _session(phase=Phase.REVIEW, last_question="Does this all look right?")
-    outcome = await _process_turn(client, settings, mid_booking, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(
+        client, cartesia_client, settings, mid_booking, b"fake-audio", "audio.webm"
+    )
     assert outcome.agent_text == templates.GREETING
     assert outcome.session.conversation.phase == Phase.GREETING
     assert get_field(outcome.session.conversation.booking, "pickup.locality").value is None
@@ -172,13 +203,16 @@ async def test_restart_resets_the_conversation_to_the_greeting(settings):
 
 async def test_a_fast_path_hit_answers_without_calling_the_llm(settings):
     client = _mock_client(stt_text="yes")
+    cartesia_client = _mock_cartesia_client()
     decision = SlotDecision("pickup.has_lift", "lift at pickup", SlotReason.MISSING)
     session = _session(last_question="Is there a lift?", decision=decision)
-    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
     assert get_field(outcome.session.conversation.booking, "pickup.has_lift").value is True
     assert client.calls["llm"] == 0
     assert client.calls["stt"] == 1
-    assert client.calls["tts"] == 1
+    assert cartesia_client.calls["tts"] == 1
 
 
 # --- fast-path miss: falls through to the real extractor -------------------
@@ -186,9 +220,12 @@ async def test_a_fast_path_hit_answers_without_calling_the_llm(settings):
 
 async def test_a_fast_path_miss_falls_through_to_the_llm(settings):
     client = _mock_client(stt_text="Koramangala", llm_content=_VALID_LOCALITY_RESPONSE)
+    cartesia_client = _mock_cartesia_client()
     decision = SlotDecision("pickup.locality", "pickup location", SlotReason.MISSING)
     session = _session(last_question="Where are you moving from?", decision=decision)
-    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
     booking = outcome.session.conversation.booking
     assert get_field(booking, "pickup.locality").value == "Koramangala"
     assert client.calls["llm"] == 1
@@ -196,9 +233,12 @@ async def test_a_fast_path_miss_falls_through_to_the_llm(settings):
 
 async def test_recent_turns_accumulate_after_a_real_llm_turn(settings):
     client = _mock_client(stt_text="Koramangala", llm_content=_VALID_LOCALITY_RESPONSE)
+    cartesia_client = _mock_cartesia_client()
     decision = SlotDecision("pickup.locality", "pickup location", SlotReason.MISSING)
     session = _session(last_question="Where are you moving from?", decision=decision)
-    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
     assert len(outcome.session.recent_turns) == 2
     assert outcome.session.recent_turns[0].text == "Koramangala"
     assert outcome.session.decision is not None  # something is now pending next
@@ -207,11 +247,15 @@ async def test_recent_turns_accumulate_after_a_real_llm_turn(settings):
 # --- TTS unavailable: agent_text still returned, audio_chunks is None ------
 
 
-async def test_tts_failure_still_returns_the_agent_text_with_no_audio(settings):
+async def test_no_cartesia_client_still_returns_the_agent_text_with_no_audio(settings):
+    """A None cartesia_client is exactly what api/routes.get_cartesia_client
+    returns when CARTESIA_API_KEY is not configured -- services/tts.
+    synthesize() treats that identically to a failed API call, so this is
+    the simplest, most direct way to exercise the same "TTS unavailable"
+    contract Cartesia's own retry-exhaustion tests cover in test_tts.py."""
     client = _mock_client(stt_text="yes")
-    client.audio.speech.create = AsyncMock(side_effect=groq.APIConnectionError(request=AsyncMock()))
     decision = SlotDecision("pickup.has_lift", "lift at pickup", SlotReason.MISSING)
     session = _session(last_question="Is there a lift?", decision=decision)
-    outcome = await _process_turn(client, settings, session, b"fake-audio", "audio.webm")
+    outcome = await _process_turn(client, None, settings, session, b"fake-audio", "audio.webm")
     assert outcome.audio_chunks is None
     assert outcome.agent_text  # still a real response, just unspoken

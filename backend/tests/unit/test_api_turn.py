@@ -11,11 +11,12 @@ paths -- which only a real request through the app can actually exercise.
 import json
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.api.routes import get_groq_client
+from app.api.routes import get_cartesia_client, get_groq_client
 from app.config import get_settings
 from app.main import app
 
@@ -48,24 +49,35 @@ def _mock_client(*, stt_text="Koramangala", llm_content=_VALID_LOCALITY_RESPONSE
         response.choices = [AsyncMock(message=AsyncMock(content=llm_content))]
         return response
 
-    async def speech_create(**_kwargs):
-        response = AsyncMock()
-        response.read = AsyncMock(return_value=b"wav-bytes")
-        return response
-
     client.audio.transcriptions.create = transcribe
     client.chat.completions.create = chat_create
-    client.audio.speech.create = speech_create
+    return client
+
+
+def _mock_cartesia_client():
+    """TTS moved to Cartesia -- a separate client/dependency from the Groq
+    one above, so it needs its own override here too, otherwise TestClient's
+    real app.main lifespan would build a real httpx.AsyncClient from
+    whatever CARTESIA_API_KEY happens to be configured locally and make a
+    real network call from what should be an offline test."""
+    client = AsyncMock()
+
+    async def post(*_args, **_kwargs):
+        request = httpx.Request("POST", "https://api.cartesia.ai/tts/bytes")
+        return httpx.Response(200, content=b"wav-bytes", request=request)
+
+    client.post = post
     return client
 
 
 @pytest.fixture
 def client(tmp_path):
-    """A TestClient with the Groq client and settings overridden -- always
-    cleared afterwards, since app.dependency_overrides mutates the same
-    module-level `app` object every other test file (test_health.py
-    included) also imports."""
+    """A TestClient with the Groq client, Cartesia client and settings all
+    overridden -- always cleared afterwards, since app.dependency_overrides
+    mutates the same module-level `app` object every other test file
+    (test_health.py included) also imports."""
     app.dependency_overrides[get_groq_client] = _mock_client
+    app.dependency_overrides[get_cartesia_client] = _mock_cartesia_client
     app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
         update={"tts_cache_dir": tmp_path}
     )
@@ -120,3 +132,13 @@ def test_get_groq_client_raises_503_when_no_key_is_configured():
     with pytest.raises(HTTPException) as exc_info:
         get_groq_client(request)
     assert exc_info.value.status_code == 503
+
+
+def test_get_cartesia_client_returns_none_without_raising_when_not_configured():
+    """Deliberately different from get_groq_client above: an absent Cartesia
+    key degrades a turn's voice, not its correctness, so this must never
+    raise -- services/tts.synthesize() is the layer that turns a None client
+    into the existing speechSynthesis-fallback behaviour."""
+    request = AsyncMock()
+    request.app.state.cartesia_client = None
+    assert get_cartesia_client(request) is None

@@ -39,7 +39,7 @@ mic -> MediaRecorder
                 6. POLICY        pure fn -> next action + target slot
                 7. RESPONDER     template render (NO LLM)
                 8. TTS           cache hit? serve bytes
-                                 cache miss? Groq Orpheus -> cache
+                                 cache miss? Cartesia -> cache
       | <- {audio, agent_text, user_text, state, missing, phase}
       v
 play audio + render live state panel
@@ -296,8 +296,8 @@ Supporting guards:
 | Upload | 100-200ms | |
 | STT (whisper-turbo) | 200-400ms | |
 | LLM (~370 tok completion @ ~500 tok/s) | ~700-800ms | **Zero on fast-path turns.** Recalculated from a real measurement (step 2.3): a realistic multi-fact turn used 371 completion tokens, not the ~200 originally guessed before the extractor existed. |
-| TTS first byte | 300-600ms | **Near-zero on cache hit** |
-| **Total** | **~2-2.9s**, often under 1s on fast-path turns | Revised from the original ~1.5-2.5s estimate to reflect the LLM row above. Still not an end-to-end measurement -- that needs the full STT+LLM+TTS loop, which only exists once phase 3 is built. |
+| TTS first byte | 100-300ms (Cartesia; was 300-600ms on Groq Orpheus) | **Near-zero on cache hit**. Cartesia's own marketed model latency is ~40-90ms; this row leaves headroom for real network RTT on top of that, not yet an end-to-end measurement. |
+| **Total** | **~1.8-2.7s**, often under 1s on fast-path turns | Revised from the original ~1.5-2.5s estimate to reflect the LLM row above and the TTS provider switch. Still not an end-to-end measurement -- that needs the full STT+LLM+TTS loop measured together. |
 
 Mitigations, in order of value:
 
@@ -324,6 +324,13 @@ Mitigations, in order of value:
    returns, before audio is ready. Perceived latency matters more than real latency.
 
 ### TTS implementation notes (step 3.2)
+
+**Historical: this section describes the original Groq Orpheus integration.** TTS later
+moved to Cartesia (MASTER_PLAN.md) after Orpheus's free tier -- 3600 tokens/*day* -- was
+confirmed live to exhaust from ordinary development testing alone, a real risk for a
+submission a human evaluator tests live. The character-limit and terms-acceptance findings
+below are kept as a record of what was actually verified at the time, not silently deleted,
+but `services/tts.py` itself no longer calls Groq for speech.
 
 `services/tts.py` implements mitigations 1 and 3 above. This step's own findings are a case
 study in why this project insists on a live call over trusting documentation, including its
