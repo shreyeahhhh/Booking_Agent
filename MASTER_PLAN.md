@@ -321,7 +321,7 @@ acceptance criterion, live, not simulated.
 |---|---|---|---|
 | 3.1 | STT service | `services/stt.py` | ✅ Groq `whisper-large-v3-turbo`. Empty/noise transcripts handled without an LLM call. |
 | 3.2 | TTS service + audio cache | `services/tts.py` | ✅ Groq Orpheus. Sentence chunking (a self-imposed 200-char chunk size, not an enforced limit -- see findings below). Cache keyed by text hash. Browser `speechSynthesis` fallback flag. |
-| 3.3 | Fast-path classifier | `conversation/fastpath.py` | Yes/no, meta-commands, bare numerics. **Fails open to the LLM.** |
+| 3.3 | Fast-path classifier | `conversation/fastpath.py` | ✅ Yes/no, meta-commands, bare numerics. **Fails open to the LLM.** |
 | 3.4 | `/turn` endpoint | `api/routes.py` | Orchestrates STT → fastpath/extract → reduce → policy → template → TTS. |
 | 3.5 | Voice UI | `frontend/src/` | Mic button, VAD silence detection (~700ms), audio playback, transcript. |
 | 3.6 | Live state panel | `frontend/src/` | Fields fill as they are captured; corrections render as `Kakkanad (was: Kochi)`. This is the evidence exhibit for the whole architecture. |
@@ -430,6 +430,37 @@ of separate WAV byte-strings rather than concatenated into one file: WAV's heade
 single length, so gluing complete WAV files together produces a malformed one, and keeping
 them separate is what lets the caller stream-play the first chunk while later ones are still
 being synthesised.
+
+**Step 3.3 needed no live call at all -- `conversation/fastpath.py` is pure, deterministic
+code, and every claim about it is checkable by running the suite.** Still verified the same
+way as everything else: not by trusting that the code type-checks, but by driving it through
+the real conversation machine. `test_fastpath_integration.py` runs a full furniture booking
+(locality, item, date, time -> floor -> lift -> floor -> lift -> disassembly -> vehicle guess
+-> review -> complete) using nothing but real `classify()` output fed into
+`conversation.machine.advance`, asserting at every step that the fast path actually fired
+rather than silently declining and passing for the wrong reason. It did, correctly, on the
+first run -- confirmed by also tracing the full turn sequence outside the test to see every
+intermediate `SlotDecision` and produced patch, not just trusting seven green dots.
+
+Two things worth naming precisely, since they were easy to get subtly wrong:
+
+- A `CONFIRM_INFERRED` decision's own field (`service.vehicle_type`, an `ENUM`) must never be
+  consulted when a bare "yes"/"no" arrives for it -- the question being asked is "does this
+  guess look right?", not "what is the vehicle?", so yes/no always means confirm/reject there,
+  regardless of the underlying field's answer type. Getting this backwards would have tried
+  (and failed) to interpret "yes" as an enum value.
+- `SlotReason.CONFLICT` produces `op: correct`, never `op: set` -- the field is already
+  `CONFIRMED` (that is why it is a conflict at all), and `set` against a `CONFIRMED` field
+  is rejected by the reducer's own guard rather than resolving anything. Using `set` here
+  would have silently produced a second, nonsensical conflict instead of resolving the first.
+
+One deliberate refinement from the original design sketch: docs/architecture.md described the
+yes/no lexicon as "<=3 tokens, lexicon match", which reads as two separate mechanisms (count
+tokens, then check a lexicon). Implemented as one instead -- exact string membership in a
+curated phrase set after normalising case/punctuation/whitespace -- since that alone already
+guarantees the same safety property (every phrase in the set happens to be <=3 tokens by
+construction) without a redundant separate counting step. docs/architecture.md corrected to
+describe what was actually built.
 
 ---
 

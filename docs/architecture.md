@@ -125,16 +125,27 @@ One call, one response. No chaining, no agent loop, no reflection pass.
 
 ### Fast paths fail open
 
-Every fast path requires all three of:
+`conversation/fastpath.py` (step 3.3) implements this for yes/no and bare-numeric answers.
+Both require all three of:
 
-1. a known expected answer type from the last question,
+1. a known expected answer type from the field the previous turn is actually pending on,
 2. a short utterance, and
-3. an exact pattern match.
+3. an exact pattern match — implemented as membership in a small, curated phrase set after
+   normalising case/punctuation/whitespace, not a token-count heuristic or a prefix check.
+   "yes, and also add a fridge" starts with "yes" but is not a *member* of the phrase set, so
+   membership alone is what keeps it from being mistaken for a clean affirmation.
+
+Meta-commands ("repeat that", "start over") are a separate, deliberately context-*independent*
+category and do not need an expected answer type at all — they mean the same thing regardless
+of what was just asked, which is exactly why matching them first, before consulting the
+pending field, is safe.
 
 Any miss falls through to the LLM. Correctness is never traded for a saved call —
 "third floor, but there's no lift" must not be swallowed by the numeric matcher.
 `tests/unit/test_fastpath_safety.py` asserts the fast path *declines* to match on an
-adversarial corpus.
+adversarial corpus; `tests/unit/test_fastpath_integration.py` drives a full booking to
+`COMPLETE` using nothing but real `classify()` output fed into `conversation.machine.advance`,
+proving the two modules actually compose the way step 3.4's `/turn` endpoint will need them to.
 
 ### Detecting empty/noise transcripts (step 3.1)
 
