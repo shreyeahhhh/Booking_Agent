@@ -174,19 +174,54 @@ Groq's actual `whisper-large-v3-turbo` deployment live before writing the classi
 The first result is Whisper's well-documented tendency to hallucinate video-outro phrases
 on silence, a side effect of training on captioned web video — reproduced here against the
 project's own model rather than assumed from folklore. The second needed no hallucination
-list at all: stripped of punctuation, nothing alphanumeric survives. `is_noise` is therefore
-two narrow checks — punctuation-stripped-to-nothing, or an exact match against a short set
-of *observed* hallucinations (currently just `"thank you"`) — and deliberately never keys
-off transcript length, so a genuine short answer like "yes" or "third floor" is never at
-risk of being misclassified. `tests/unit/test_stt_live.py` re-runs this exact probe as a
-permanent, low-cost live test so a future change in Groq's Whisper behaviour is caught by
-the suite rather than discovered mid-demo.
+list at all: stripped of punctuation, nothing alphanumeric survives.
 
-One rejected alternative: Whisper's `verbose_json` response includes a per-segment
-`no_speech_prob`, which looks like the principled signal to use instead of a text
-heuristic. Tested live and discarded — Groq's deployment returns `0` for every segment
-regardless of actual content, silence included, so the field carries no information on
-this API. Using it would have looked more rigorous while actually being dead weight.
+**This held only until `transcribe()` started passing a `prompt` argument.** A user report
+that Kerala/Karnataka place names — especially less common local ones — were not being
+recognised motivated conditioning Whisper's decoder with `_LOCALITY_PROMPT`, a short list of
+real localities across both states (Whisper's documented, fine-tuning-free technique for
+biasing proper-noun recognition). A controlled live A/B (same phrases, with and without the
+prompt) confirmed it measurably helps: 3 of 4 test phrases improved, none regressed. But
+re-probing silence with the prompt active showed it also widens what Whisper hallucinates
+well past "Thank you." — samples included "Pag.", a stray URL, several seconds of a single
+word looping, and, far more often than anything else, the prompt's *own text* echoed back
+verbatim ("Kerala places.", sometimes with an extra invented word appended, e.g. "Kerala
+places, Kosovo."). `is_noise` now has four checks instead of two: the original
+punctuation-strip and an exact-hallucination-list match (now including "thank you so
+much"/"thank you very much", drifted relatives observed only once the prompt was active);
+a prefix check for a verbatim echo of `_LOCALITY_PROMPT`'s own section-header text
+(`_PROMPT_ECHO_PREFIXES`); and a structural repeated-word-loop detector
+(`_has_repeated_word_loop`, 4+ identical words running) that catches the looping failure
+mode independent of *which* word it is, so it does not need rediscovering every time the
+hallucination vocabulary shifts again. All four still deliberately never key off transcript
+length, so a genuine short answer like "yes" or "third floor" is never at risk.
+
+This is a best-effort filter, not a total guarantee, and that gap is accepted deliberately
+rather than chased indefinitely — live samples like "If you feel like a" match none of the
+four checks. What must actually never happen is downstream: a hallucination that reaches the
+real extractor must never come back as a patch with no `ambiguity` flag, since
+`domain/reducer.py`'s `_write_scalar` accepts exactly that as confirmed fact. This was tested
+directly, not assumed, and it does not hold unconditionally — a live run caught "Kerala
+places, Kosovo." (before `_PROMPT_ECHO_PREFIXES` existed) being extracted as two separate
+`PROVIDED` localities at confidence 1.0 with no ambiguity flag at all, i.e. silently recorded
+as fact. That specific shape is now caught before it ever reaches the extractor (the prefix
+check above); other, less structured leaks ("Kerenaga, Ejiti, Gopal.") were confirmed live to
+still land as low-confidence, `ambiguity`-flagged patches — the same path a genuinely vague
+real answer takes. `tests/unit/test_stt_live.py` asserts this layered property directly (feed
+the extractor whenever `is_noise` doesn't catch a sample, assert no unflagged patch comes
+back) rather than asserting `is_noise` alone, which is the more precise, honest claim this
+design actually depends on. See MASTER_PLAN.md's phase 3 write-up for the full probe history.
+
+Two rejected alternatives, both tested live rather than assumed: Whisper's `verbose_json`
+response includes a per-segment `no_speech_prob`, which looks like the principled signal to
+use instead of a text heuristic — Groq's deployment returns `0` for every segment regardless
+of actual content, silence included, so the field carries no information on this API. A
+second look, once the prompt widened the hallucination space, tried `avg_logprob` from the
+same `verbose_json` response as a confidence cutoff — a live comparison showed silence and
+real speech produce *overlapping* ranges (-1.70 to -0.44 for silence samples, -0.37 to -0.18
+for real speech), so no single threshold separates them without also rejecting genuine
+speech. Both would have looked more rigorous than a text heuristic while actually being dead
+weight or actively harmful.
 
 ## Keeping templated speech natural
 
@@ -270,9 +305,21 @@ Mitigations, in order of value:
    templates, their audio is synthesised once and served from cache thereafter. This is
    the direct payoff of choosing templates over generated text: it cuts both latency and
    TTS spend (~10x) with the same decision.
-2. **VAD threshold tuned to ~700ms** — biggest single win, one constant.
-3. **Stream TTS, play the first chunk immediately.** Orpheus caps input at 200 characters
-   per request, so responses are split by sentence regardless.
+2. **VAD endpointing via an adaptive noise floor, not a fixed threshold.** The original
+   design (a single fixed RMS constant "tuned by ear on a real microphone") turned out
+   uncalibratable in practice: `getUserMedia({audio:true})`'s default automatic gain
+   control continuously renormalises levels, so no fixed number tracks across devices or
+   rooms. Replaced with a running ambient-noise estimate (updated only while quiet, so a
+   loud word never drags the baseline up) and speech judged as a margin above *that*,
+   not a constant — see `frontend/src/useRecorder.ts` and MASTER_PLAN.md's phase 3
+   write-up.
+3. **Stream TTS, play the first chunk immediately, and synthesise every chunk
+   concurrently.** `_MAX_CHARS = 200` is a self-imposed chunk size (see the TTS
+   implementation notes below — Orpheus does not actually enforce a per-request character
+   cap), chosen so a multi-chunk response can start playing before the rest is ready.
+   `synthesize()` runs all of a response's chunks through `asyncio.gather` rather than
+   awaiting them one at a time, so a multi-chunk response's latency tracks the slowest
+   single chunk rather than their sum.
 4. **Optimistic UI** — render the transcript and state-panel updates the moment STT
    returns, before audio is ready. Perceived latency matters more than real latency.
 
@@ -329,6 +376,17 @@ stress-testing (e.g. proving an exact upper bound) was deliberately not pursued 
 constraint above appeared — the account's daily budget is a shared, scarce resource for the
 rest of this project, not something to spend chasing a boundary that, per the finding above,
 does not actually gate anything.
+
+**Retroactively fixed, found during a later lag investigation:** `synthesize()` was awaiting
+`_get_or_synthesize_chunk` one chunk at a time in a `for` loop, so a multi-chunk response (the
+final booking summary readback is the common case long enough to span more than one) paid the
+full per-chunk network latency once *per chunk* rather than once total — a real, measurable
+tax against this project's own latency budget above. Rewritten to fan the same calls out
+through `asyncio.gather`, preserving both the existing cache-hit-skips-the-network-call
+behaviour and chunk order (`gather` returns results in input order, not completion order).
+`test_tts.py` gained a timing-based regression test (mocked chunk delay, asserting total
+elapsed time tracks one chunk's delay rather than the sum) since the existing count/content
+tests could not have caught a regression back to sequential awaiting.
 
 ## Model selection
 

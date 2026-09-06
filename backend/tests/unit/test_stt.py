@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import groq
 import pytest
 
-from app.services.stt import is_noise, transcribe
+from app.services.stt import _PROMPT_ECHO_PREFIXES, _has_repeated_word_loop, is_noise, transcribe
 
 # --- is_noise ---------------------------------------------------------
 
@@ -29,10 +29,49 @@ from app.services.stt import is_noise, transcribe
         "thank you",
         "  THANK YOU  ",
         "Thank you!",
+        "Thank you so much.",  # observed only after _LOCALITY_PROMPT was added
+        "Thank you very much.",
+        "Hentai, Bengaluru localities and Hikana, Kompanya, Bengaluru localities, "
+        "Kajana, Utsuwa, Kwonamu, Kosovo, Kwonamu, Kado, Kwonamu, Kwonamu, Kwonamu, "
+        "Kwonamu, Kwonamu, Kwonamu, Kwonamu.",  # exact repetition-loop hallucination, observed live
     ],
 )
 def test_is_noise_true_for_empty_and_observed_hallucinations(text):
     assert is_noise(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "word word word word",  # 4 identical words running
+        "one two three three three three four",  # a loop embedded mid-sentence
+    ],
+)
+def test_is_noise_true_for_a_repeated_word_loop(text):
+    assert is_noise(text) is True
+
+
+def test_has_repeated_word_loop_requires_four_in_a_row_not_just_four_total():
+    assert _has_repeated_word_loop("kwonamu kosovo kwonamu kado kwonamu") is False
+    assert _has_repeated_word_loop("kwonamu kwonamu kwonamu kwonamu") is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Kerala places.",  # observed live from silence, repeatedly
+        "Kerala places, Kosovo.",  # observed live -- extracted as 2 fake localities before this fix
+        "kerala places",
+        "  KERALA PLACES, Koko.  ",
+        "Bengaluru localities, foo bar.",  # same mechanism, not yet independently observed live
+    ],
+)
+def test_is_noise_true_for_a_verbatim_prompt_echo(text):
+    assert is_noise(text) is True
+
+
+def test_prompt_echo_prefixes_are_lowercase_since_is_noise_normalizes_to_lowercase():
+    assert all(prefix == prefix.lower() for prefix in _PROMPT_ECHO_PREFIXES)
 
 
 @pytest.mark.parametrize(
@@ -45,6 +84,9 @@ def test_is_noise_true_for_empty_and_observed_hallucinations(text):
         "Koramangala",
         "thank you for helping me move the sofa",  # real sentence containing the phrase
         "no thank you",
+        "Kerala is where I'm moving from",  # mentions the word but isn't the echoed label
+        "I live near Bengaluru, close to the airport",
+        "I'm moving from Kerala places, my hometown",  # label mid-sentence, not a leading echo
     ],
 )
 def test_is_noise_false_for_real_answers(text):

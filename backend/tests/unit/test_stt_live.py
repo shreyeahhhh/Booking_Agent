@@ -17,10 +17,12 @@ import wave
 
 import groq
 import pytest
-from groq import Groq
+from groq import AsyncGroq, Groq
 
 from app.config import get_settings
-from app.services.stt import is_noise
+from app.conversation.machine import start
+from app.llm.extractor import extract
+from app.services.stt import is_noise, transcribe
 
 _settings = get_settings()
 
@@ -58,34 +60,70 @@ def _white_noise_wav(seconds: float = 1.5, amplitude: int = 500, sample_rate: in
     return buf.getvalue()
 
 
-def test_digital_silence_transcribes_as_a_known_hallucination_and_is_flagged_noise():
-    client = Groq(api_key=_settings.groq_api_key)
-    result = client.audio.transcriptions.create(
-        model=_settings.groq_stt_model,
-        file=("silence.wav", _silent_wav()),
-        response_format="json",
-        temperature=0,
+async def _assert_never_a_confident_silent_write(client: AsyncGroq, text: str | None) -> None:
+    """The safety property this design actually depends on, asserted directly.
+
+    is_noise() is a best-effort filter, not a guarantee -- see its own
+    docstring for the accepted, live-verified gap _LOCALITY_PROMPT opened
+    up (samples like "If you feel like a" and "Kerenaga, Ejiti, Gopal."
+    match neither of its two checks). Asserting is_noise() alone made this
+    a permanently-flaky test for a gap the design already accepts. What
+    must actually never happen is downstream: reducer.py's _write_scalar
+    only ever accepts a patch as PROVIDED fact when `ambiguity is None`, so
+    a hallucinated transcript reaching the real extractor and coming back
+    as an unflagged patch is the one outcome that would silently corrupt
+    booking state. Fed live during this investigation, the two garbage
+    samples above were both extracted with an `ambiguity` reason attached
+    instead (`vague_location` / `city_level_only`) -- confirm that holds
+    here rather than re-assuming it.
+    """
+    if is_noise(text):
+        return  # caught at the cheap, no-LLM-call layer -- the common case
+    result = await extract(
+        client,
+        model=_settings.groq_llm_model,
+        state=start().booking,
+        last_question="Where are you moving from, and what are you sending?",
+        recent_turns=[],
+        utterance=text,
     )
-    print(f"\nsilence transcript: {result.text!r}")
-    assert is_noise(result.text), (
-        f"silence transcribed as {result.text!r}, which is_noise did not catch -- "
-        "either a new Whisper hallucination was observed (add it to "
-        "_SILENCE_HALLUCINATIONS) or the deployment changed behaviour."
+    unsafe = [p for p in result.patches if p.ambiguity is None]
+    assert not unsafe, (
+        f"transcript {text!r} slipped past is_noise() AND the extractor wrote "
+        f"{unsafe!r} with no ambiguity flag -- _write_scalar accepts that as a "
+        "confirmed fact, so this is a real silent-corruption risk, not a "
+        "cosmetic one."
     )
 
 
-def test_random_noise_transcribes_as_punctuation_and_is_flagged_noise():
-    client = Groq(api_key=_settings.groq_api_key)
-    result = client.audio.transcriptions.create(
-        model=_settings.groq_stt_model,
-        file=("noise.wav", _white_noise_wav()),
-        response_format="json",
-        temperature=0,
-    )
-    print(f"\nnoise transcript: {result.text!r}")
-    assert is_noise(result.text), (
-        f"noise transcribed as {result.text!r}, which is_noise did not catch"
-    )
+async def test_digital_silence_never_reaches_conversation_state_as_a_confirmed_fact():
+    """Goes through services/stt.transcribe() itself, not a hand-rolled API
+    call -- _LOCALITY_PROMPT is only ever sent by the real function, and a
+    live sweep showed it makes the silence hallucination considerably less
+    predictable than the plain "Thank you." an earlier version of this test
+    asserted. Repeats several times: the hallucination varies enough now
+    that one sample is not a confident signal either way.
+    """
+    async with AsyncGroq(api_key=_settings.groq_api_key) as client:
+        for seconds in (0.5, 1.5, 3.0):
+            text = await transcribe(
+                client, model=_settings.groq_stt_model, audio=_silent_wav(seconds), filename="s.wav"
+            )
+            print(f"\nsilence ({seconds}s) transcript: {text!r}")
+            await _assert_never_a_confident_silent_write(client, text)
+
+
+async def test_random_noise_never_reaches_conversation_state_as_a_confirmed_fact():
+    async with AsyncGroq(api_key=_settings.groq_api_key) as client:
+        for amplitude in (500, 4000):
+            text = await transcribe(
+                client,
+                model=_settings.groq_stt_model,
+                audio=_white_noise_wav(amplitude=amplitude),
+                filename="n.wav",
+            )
+            print(f"\nnoise (amplitude={amplitude}) transcript: {text!r}")
+            await _assert_never_a_confident_silent_write(client, text)
 
 
 def test_malformed_audio_is_a_structural_400_not_a_transient_one():
