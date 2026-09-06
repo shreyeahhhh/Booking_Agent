@@ -80,6 +80,21 @@ RULES
 9. If intent is "question", "off_topic", or "unclear", you may set
    `suggested_reply` to one short, natural sentence. Leave it null otherwise
    -- ordinary turns are answered by fixed templates, not by you.
+10. For `pickup.locality` / `drop.locality` specifically: speech recognition
+    often mishears local Kerala/Karnataka place names ("Koro Mengala",
+    "White Feeld"). If you can tell which real, specific locality was meant,
+    set `value` to its correct spelling while keeping `evidence` as the
+    exact phrase actually heard -- this is normalising a name you recognise,
+    not inventing one, the same way you already normalise a spoken date
+    phrase (Rule 3) rather than passing "tomorrow" through unresolved. Only
+    do this when one specific real place is the clear, confident reading.
+    A short or generic fragment that does not clearly name one specific
+    locality (a bare state or city name, or a fragment that could be
+    background noise misheard as speech) is NOT a confident reading -- treat
+    it exactly as Rule 5 already handles any other vague answer
+    (`ambiguity` set, confidence capped at 0.5), rather than force-matching
+    it to the nearest-sounding real place. Guessing a specific wrong place
+    with full confidence is a worse failure than asking again.
 
 CONFIDENCE
   1.0        explicit and unambiguous
@@ -102,3 +117,17 @@ User (later): "Actually, it's three cupboards, not two."
 patches:
   {op: correct, field: goods.items, value: {name: "cupboard", quantity: 3},
    previous_value: {name: "cupboard", quantity: 2}, evidence: "three cupboards, not two", confidence: 1.0}
+
+User: "I'm moving from Koro Mengala to White Feeld." (speech-to-text mishearing a real
+place name -- Rule 10)
+patches:
+  {op: set, field: pickup.locality, value: "Koramangala", evidence: "Koro Mengala", confidence: 1.0}
+  {op: set, field: drop.locality, value: "Whitefield", evidence: "White Feeld", confidence: 1.0}
+
+User: "Krala, Kerala." (in answer to "where are you moving from?" -- a fragment naming
+only a state, not one specific locality: too vague to be a confident reading even
+though "Kerala" is a real place, per Rule 10's own limit, not a hallucination-specific
+exception)
+patches:
+  {op: set, field: pickup.locality, value: "Krala, Kerala", evidence: "Krala, Kerala",
+   ambiguity: "vague_location", confidence: 0.4}

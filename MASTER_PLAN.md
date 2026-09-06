@@ -958,6 +958,43 @@ exactly this kind of counter-example against a nondeterministic external model, 
 pass unconditionally. Worth a dedicated pass if there is time before submission, not
 worth rushing into the same sitting as an unrelated provider migration.
 
+**The extractor prompt gained a deliberate, narrow exception to its own Rule 1** ("never
+infer a value the user did not state"), specifically for `pickup.locality`/`drop.locality`:
+if the utterance clearly names a real, specific Kerala/Karnataka place that speech
+recognition mangled ("Koro Mengala" for "Koramangala"), the extractor now sets `value` to
+the corrected spelling while keeping `evidence` as the exact phrase heard -- normalising a
+name it recognises, the same class of move Rule 3 already makes the extractor do for date
+phrases, not inventing one. This activates a mechanism that was already fully built but
+dormant: `domain/reducer.py`'s locality `raw_text` tracking and `conversation/summary.py`'s
+"Koramangala (heard as 'Kore Mangala')" rendering existed since step 2.7's retroactive fix,
+but a live probe at the time found the extractor never actually produced a value/evidence
+divergence for locality, because Rule 1 as originally written forbade exactly that. The new
+rule is deliberately bounded, with a worked example of the boundary baked directly into the
+prompt: normalise only when one specific real place is a confident reading; a short or
+generic fragment that does not clearly name one place (a bare state name, or a fragment
+shaped like the noise hallucinations documented above) still gets Rule 5's existing
+vague-answer treatment (`ambiguity` set, confidence capped at 0.5), not a forced match --
+guessing a specific wrong place at full confidence is a worse failure than asking again.
+
+**Verified live, partially -- an important limit on that verification is itself the
+finding worth recording.** A probe covering both the desired behaviour and the guardrail
+confirmed: "I'm moving from Koro Mengala to White Feeld." correctly resolved to
+`pickup.locality="Koramangala"` / `drop.locality="Whitefield"` with `evidence` preserving
+the literal misheard phrase; "I'm moving from Kerala." correctly stayed `ambiguity=
+vague_location` at confidence 0.4 rather than being force-matched to a specific locality;
+two subtler test misspellings ("Ernankulam", "Edapally") were *not* corrected -- a real
+limit on how comprehensive this is, but the safer failure direction (passing an imperfect
+name through unchanged, exactly the pre-existing behaviour, rather than guessing). **The
+one case this session most needed to re-confirm -- the exact "Krala, Kerala."/"Kerenaga,
+Ejiti, Gopal." hallucination-shaped fragments from the finding directly above -- could not
+be conclusively re-tested**: the live probe ran headlong into the Groq LLM account's own
+daily token quota (200,000 TPD) sitting at 199,957 used, a separate, real, time-sensitive
+discovery in its own right (this account cannot make another extractor call for a
+meaningful stretch today, which affects live manual testing generally, not just this
+probe). Both fragments are now the prompt's own explicit negative example, which is the
+strongest bound available without a live re-run -- worth confirming with a real call once
+the daily quota has room again, rather than treated as settled.
+
 ---
 
 ## Phase 4 — Deployment and resilience (Day 4)
