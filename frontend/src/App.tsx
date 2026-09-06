@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { BookingStateShape, TurnResponse } from "./api";
+import type { BookingStateShape, FieldValue, TurnResponse } from "./api";
 import { createSession, postTurn } from "./api";
 import { speak } from "./audio";
 import { useRecorder } from "./useRecorder";
@@ -49,6 +49,22 @@ function formatItems(items: BookingStateShape["goods"]["items"]): string {
     .join(", ");
 }
 
+/** A field's current value, formatted, plus " (was: <previous>)" when
+ * `revisions` shows it was corrected -- MASTER_PLAN.md step 3.6, the one
+ * piece 3.5 deliberately deferred. `revisions` is append-only (see
+ * domain/reducer.py's `_write_scalar`), so the *last* entry is the value
+ * immediately before the current one, not the first-ever value. Both the
+ * current and previous value go through the same `format` function, so a
+ * corrected vehicle type reads "Tata Ace (was: Mini Truck)", not a raw
+ * enum value next to a prettified one. */
+function displayValue<T>(field: FieldValue<T>, format: (value: T) => string, placeholder: string): string {
+  if (field.value === null) return placeholder;
+  const current = format(field.value);
+  const previous = field.revisions.at(-1);
+  if (!previous || previous.value === null) return current;
+  return `${current} (was: ${format(previous.value)})`;
+}
+
 function rowsFrom(state: BookingStateShape | null): Row[] {
   if (!state) {
     return [
@@ -59,18 +75,26 @@ function rowsFrom(state: BookingStateShape | null): Row[] {
       { label: "Truck", value: "We'll pick", filled: false },
     ];
   }
-  const when = [formatDate(state.schedule.date.value), state.schedule.time_window.value]
-    .filter(Boolean)
-    .join(" · ");
   const items = formatItems(state.goods.items);
+  const dateText = displayValue(state.schedule.date, formatDate, "");
+  const timeText = displayValue(state.schedule.time_window, (v) => v, "");
+  const when = [dateText, timeText].filter(Boolean).join(" · ");
   return [
-    { label: "From", value: state.pickup.locality.value || "Say where", filled: !!state.pickup.locality.value },
-    { label: "To", value: state.drop.locality.value || "Say where", filled: !!state.drop.locality.value },
+    {
+      label: "From",
+      value: displayValue(state.pickup.locality, (v) => v, "Say where"),
+      filled: !!state.pickup.locality.value,
+    },
+    {
+      label: "To",
+      value: displayValue(state.drop.locality, (v) => v, "Say where"),
+      filled: !!state.drop.locality.value,
+    },
     { label: "Stuff", value: items || "Say what", filled: items.length > 0 },
     { label: "When", value: when || "Say when", filled: when.length > 0 },
     {
       label: "Truck",
-      value: prettify(state.service.vehicle_type.value) || "We'll pick",
+      value: displayValue(state.service.vehicle_type, prettify, "We'll pick"),
       filled: !!state.service.vehicle_type.value,
     },
   ];
