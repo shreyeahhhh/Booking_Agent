@@ -1,0 +1,33 @@
+{
+  "name": "canonical_house_move",
+  "turns": [
+    {
+      "utterance": "I need to move a sofa and two cupboards from Koramangala to Whitefield tomorrow evening.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"pickup.locality\",\n      \"value\": \"Koramangala\",\n      \"previous_value\": null,\n      \"evidence\": \"Koramangala\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"drop.locality\",\n      \"value\": \"Whitefield\",\n      \"previous_value\": null,\n      \"evidence\": \"Whitefield\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"append\",\n      \"field\": \"goods.items\",\n      \"value\": {\n        \"name\": \"sofa\",\n        \"quantity\": 1,\n        \"size_hint\": null\n      },\n      \"previous_value\": null,\n      \"evidence\": \"a sofa\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 0.9\n    },\n    {\n      \"op\": \"append\",\n      \"field\": \"goods.items\",\n      \"value\": {\n        \"name\": \"cupboard\",\n        \"quantity\": 2,\n        \"size_hint\": null\n      },\n      \"previous_value\": null,\n      \"evidence\": \"two cupboards\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 0.9\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"schedule.date\",\n      \"value\": \"tomorrow\",\n      \"previous_value\": null,\n      \"evidence\": \"tomorrow\",\n      \"needs_normalization\": true,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"schedule.time_window\",\n      \"value\": \"evening\",\n      \"previous_value\": null,\n      \"evidence\": \"evening\",\n      \"needs_normalization\": true,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Third floor, there's a lift at pickup. Drop is ground floor.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"pickup.floor\",\n      \"value\": 3,\n      \"previous_value\": null,\n      \"evidence\": \"Third floor\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"pickup.has_lift\",\n      \"value\": true,\n      \"previous_value\": null,\n      \"evidence\": \"there's a lift at pickup\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"drop.floor\",\n      \"value\": 0,\n      \"previous_value\": null,\n      \"evidence\": \"ground floor\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Actually, make it Saturday, not tomorrow.",
+      "raw_response": "{\n  \"intent\": \"correction\",\n  \"patches\": [\n    {\n      \"op\": \"correct\",\n      \"field\": \"schedule.date\",\n      \"value\": \"Saturday\",\n      \"previous_value\": \"2026-09-08\",\n      \"evidence\": \"make it Saturday, not tomorrow\",\n      \"needs_normalization\": true,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "No, nothing needs to be taken apart.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"service.needs_disassembly\",\n      \"value\": false,\n      \"previous_value\": null,\n      \"evidence\": \"No, nothing needs to be taken apart\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "No packing help needed.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"service.needs_packing\",\n      \"value\": false,\n      \"previous_value\": null,\n      \"evidence\": \"No packing help needed\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Yes, that's fine.",
+      "raw_response": "{\n  \"intent\": \"confirm\",\n  \"patches\": [],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Yes, that's all correct.",
+      "raw_response": "{\n  \"intent\": \"confirm\",\n  \"patches\": [],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    }
+  ]
+}

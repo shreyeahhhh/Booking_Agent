@@ -1,0 +1,29 @@
+{
+  "name": "ambiguous_then_clarified",
+  "turns": [
+    {
+      "utterance": "I'm moving from Kochi.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"pickup.locality\",\n      \"value\": \"Kochi\",\n      \"previous_value\": null,\n      \"evidence\": \"Kochi\",\n      \"needs_normalization\": false,\n      \"ambiguity\": \"vague_location\",\n      \"confidence\": 0.4\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Kakkanad, near the infopark.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"correct\",\n      \"field\": \"pickup.locality\",\n      \"value\": \"Kakkanad\",\n      \"previous_value\": \"Kochi\",\n      \"evidence\": \"Kakkanad, near the infopark\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "To Thodupuzha, and I'm sending some furniture and clothes.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"drop.locality\",\n      \"value\": \"Thodupuzha\",\n      \"previous_value\": null,\n      \"evidence\": \"To Thodupuzha\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"append\",\n      \"field\": \"goods.items\",\n      \"value\": {\n        \"name\": \"furniture\",\n        \"quantity\": null,\n        \"size_hint\": null\n      },\n      \"previous_value\": null,\n      \"evidence\": \"some furniture\",\n      \"needs_normalization\": false,\n      \"ambiguity\": \"vague_quantity\",\n      \"confidence\": 0.5\n    },\n    {\n      \"op\": \"append\",\n      \"field\": \"goods.items\",\n      \"value\": {\n        \"name\": \"clothes\",\n        \"quantity\": null,\n        \"size_hint\": null\n      },\n      \"previous_value\": null,\n      \"evidence\": \"some clothes\",\n      \"needs_normalization\": false,\n      \"ambiguity\": \"vague_quantity\",\n      \"confidence\": 0.5\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Next Tuesday afternoon.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"schedule.date\",\n      \"value\": \"Next Tuesday\",\n      \"previous_value\": null,\n      \"evidence\": \"Next Tuesday\",\n      \"needs_normalization\": true,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"schedule.time_window\",\n      \"value\": \"afternoon\",\n      \"previous_value\": null,\n      \"evidence\": \"afternoon\",\n      \"needs_normalization\": true,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Sounds good.",
+      "raw_response": "{\n  \"intent\": \"confirm\",\n  \"patches\": [],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Yes.",
+      "raw_response": "{\n  \"intent\": \"confirm\",\n  \"patches\": [],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    }
+  ]
+}

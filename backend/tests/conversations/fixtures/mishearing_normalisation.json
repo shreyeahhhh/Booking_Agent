@@ -1,0 +1,25 @@
+{
+  "name": "mishearing_normalisation",
+  "turns": [
+    {
+      "utterance": "I'm moving from Koro Mengala to White Feeld.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"pickup.locality\",\n      \"value\": \"Koramangala\",\n      \"previous_value\": null,\n      \"evidence\": \"Koro Mengala\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"drop.locality\",\n      \"value\": \"Whitefield\",\n      \"previous_value\": null,\n      \"evidence\": \"White Feeld\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "I need to move a bridge and a cot.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"append\",\n      \"field\": \"goods.items\",\n      \"value\": {\n        \"name\": \"fridge\",\n        \"quantity\": 1,\n        \"size_hint\": null\n      },\n      \"previous_value\": null,\n      \"evidence\": \"a bridge\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 0.9\n    },\n    {\n      \"op\": \"append\",\n      \"field\": \"goods.items\",\n      \"value\": {\n        \"name\": \"cot\",\n        \"quantity\": 1,\n        \"size_hint\": null\n      },\n      \"previous_value\": null,\n      \"evidence\": \"a cot\",\n      \"needs_normalization\": false,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "This Friday morning.",
+      "raw_response": "{\n  \"intent\": \"provide_info\",\n  \"patches\": [\n    {\n      \"op\": \"set\",\n      \"field\": \"schedule.date\",\n      \"value\": \"This Friday\",\n      \"previous_value\": null,\n      \"evidence\": \"This Friday\",\n      \"needs_normalization\": true,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    },\n    {\n      \"op\": \"set\",\n      \"field\": \"schedule.time_window\",\n      \"value\": \"morning\",\n      \"previous_value\": null,\n      \"evidence\": \"morning\",\n      \"needs_normalization\": true,\n      \"ambiguity\": null,\n      \"confidence\": 1.0\n    }\n  ],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Yes, that's fine.",
+      "raw_response": "{\n  \"intent\": \"confirm\",\n  \"patches\": [],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    },
+    {
+      "utterance": "Confirmed.",
+      "raw_response": "{\n  \"intent\": \"confirm\",\n  \"patches\": [],\n  \"suggested_reply\": null,\n  \"unresolved_mentions\": []\n}"
+    }
+  ]
+}
