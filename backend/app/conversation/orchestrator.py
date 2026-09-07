@@ -56,16 +56,27 @@ def _closing_line(phase: Phase) -> str:
     return ""
 
 
-def compose_response(extraction: ExtractionResult, result: TurnResult) -> str:
+def compose_response(extraction: ExtractionResult, result: TurnResult, *, was_already_complete: bool) -> str:
     """What the agent actually says, given an extraction and the machine's
     resulting TurnResult. Never calls the LLM itself -- everything it needs
-    is already in its two arguments."""
+    is already in its arguments.
+
+    `was_already_complete` (the phase *before* this turn, from finish_turn's
+    own `conversation` argument) exists for exactly one case: a courtesy
+    remark ("thank you") after the booking was already COMPLETE produces no
+    patches and no decision, landing in the same branch a brand-new
+    completion does -- without this check that branch always re-renders
+    (and speaks) the full summary again, which reads as ignoring "thank
+    you" and launching back into a wall of text instead of a natural reply.
+    """
     if _uses_suggested_reply(extraction):
         return extraction.suggested_reply
     if result.decision is not None:
         return templates.compose_turn_response(
             extraction.patches, result.conversation.booking, result.decision
         )
+    if was_already_complete and result.conversation.phase == Phase.COMPLETE:
+        return templates.POST_COMPLETION_ACKNOWLEDGMENT
     summary_text = summary.render_summary(result.conversation.booking)
     return f"{summary_text}\n\n{_closing_line(result.conversation.phase)}"
 
@@ -80,13 +91,14 @@ def finish_turn(
     """Advance the machine and compose the response text -- the shared tail
     every caller needs regardless of how `extraction` was produced (a real
     LLM call, or a fast-path hit that skipped one entirely)."""
+    was_already_complete = conversation.phase == Phase.COMPLETE
     result = machine.advance(
         conversation,
         extraction,
         reference=reference,
         max_clarify_attempts=max_clarify_attempts,
     )
-    response_text = compose_response(extraction, result)
+    response_text = compose_response(extraction, result, was_already_complete=was_already_complete)
     return TurnOutcome(
         conversation=result.conversation, decision=result.decision, response_text=response_text
     )

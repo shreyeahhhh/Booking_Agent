@@ -393,10 +393,28 @@ def _conflict_question(decision: SlotDecision, state: BookingState) -> str:
     )
 
 
+_LOCALITY_FIELDS = ("pickup.locality", "drop.locality")
+
+# Offered once a location has already failed to resolve clearly at least
+# once (clarify_attempts >= 2 -- record_question_asked in domain/policy.py
+# bumps it *before* this question is composed, so 2 means this is already
+# the second ask, not the first) -- not on the very first vague answer,
+# which would read as the agent over-reacting to one unclear reply instead
+# of trying the obvious thing (asking again) first. A pasted Google Maps
+# link sidesteps STT mishearing entirely (services/maps.py resolves it to
+# an exact point with no speech recognition involved at all), so once
+# clarifying by voice has already failed once, it is a genuinely more
+# helpful next suggestion than asking the same way a third time.
+_MAP_LINK_SUGGESTION = " Or you can just paste a Google Maps link for the exact spot."
+
+
 def _ambiguity_question(decision: SlotDecision, state: BookingState) -> str:
     field = get_field(state, decision.field_path)
     template = _AMBIGUITY_QUESTIONS.get(field.ambiguity, "Could you clarify that for me?")
-    return template.format(value=field.value)
+    question = template.format(value=field.value)
+    if decision.field_path in _LOCALITY_FIELDS and field.clarify_attempts >= 2:
+        question += _MAP_LINK_SUGGESTION
+    return question
 
 
 def _confirm_inferred_question(state: BookingState) -> str:
@@ -433,3 +451,13 @@ def compose_turn_response(patches: list[Patch], state: BookingState, decision: S
 # it against within one conversation. Spoken before anything is known, so it
 # also cannot depend on state the way every other composed line here does.
 GREETING = "Hi! I can help you book a move. Where are you moving from, and what are you sending?"
+
+# Same reasoning as GREETING, at the other end of a conversation: a courtesy
+# remark once the booking is already COMPLETE (orchestrator.compose_response's
+# `was_already_complete` branch) is not a slot question, so it needs no
+# rotation and cannot depend on state. Without this, "thank you" after
+# completion fell through to the same summary-plus-closing-line rendering a
+# brand-new completion gets, re-reading (and re-*speaking*, via TTS) the
+# entire booking back for no reason -- confirmed live, and exactly the kind
+# of unnatural moment a voice interface should not have.
+POST_COMPLETION_ACKNOWLEDGMENT = "You're welcome! Let me know if there's anything else."

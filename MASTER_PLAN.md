@@ -1421,10 +1421,78 @@ both files' mocked Groq clients now branch on which model a given call asked for
 same signal `routes.py` itself uses), plus new tests for the reject path, the fail-closed
 path, and confirming a fast-path hit skips the guard entirely. Full non-live suite green.
 
-**Latency**: one additional sequential Groq call for every turn that is not a fast-path
-hit -- a real, honest cost, not hidden. Not measured end-to-end this session (Groq's own
-inference is fast, and the guard's prompt is a small fraction of the extractor's), worth
-a real measurement before relying on this for a live, timed demo.
+**Latency, measured live** (this entry originally said "not measured" -- corrected once it
+actually was, rather than left stale): the guard call itself averages ~0.5-0.7s. For a
+normal in-scope turn this adds on top of the extractor's own ~1.7-1.9s (roughly +30%,
+~2.4s total) -- a real, honest cost, not hidden. For an off-topic turn it is faster overall
+than before, since the larger extractor call is skipped entirely. One extractor call
+spiked to ~30s during the same measurement run -- an apparent Groq-side anomaly, present
+before this change and unrelated to it, not papered over in the number reported.
+
+---
+
+## Phase 3.11 — Two follow-ups from the scope guardrail: gratitude, and a map-link nudge
+
+**Request 1: "the guardrail must understand that the user is telling thank you."**
+Live-tested first, not assumed either way: a bare "thank you" (and five variants) already
+classified correctly as `allowed=True, intent=small_talk_related_to_booking` at the
+guard layer, in isolation. The real gap was one level downstream. Fed "Thank you so much!"
+to the real extractor with `LAST_QUESTION="Booking confirmed. Thank you!"` (i.e. right
+after a completed booking) -- it classified as `intent=confirm`, patches empty, which is a
+reasonable reading in isolation. But `conversation/machine.py`'s `is_clean_confirm` check
+matches `phase in (CONFIRM_INFERRED, REVIEW, COMPLETE)`, so a clean confirm at an
+*already-COMPLETE* phase re-runs the exact same "nothing pending -> render the full
+summary" branch a **brand-new** completion gets. Confirmed by code trace, then locked in
+as a regression test: saying "thank you" after the booking was already done would have
+made the agent re-read (and, via TTS, re-*speak*) the entire booking summary back --
+exactly the kind of unnatural moment a voice interface should not produce.
+
+Fixed in `conversation/orchestrator.py`: `finish_turn` now captures
+`was_already_complete = conversation.phase == Phase.COMPLETE` from its own pre-turn
+`conversation` argument (already available, no new plumbing needed elsewhere) and passes
+it to `compose_response`, which returns a new fixed line,
+`templates.POST_COMPLETION_ACKNOWLEDGMENT` ("You're welcome! Let me know if there's
+anything else."), instead of re-rendering the summary -- but only when the booking was
+*already* COMPLETE going into this turn. Reaching COMPLETE for the first time (from
+REVIEW) is untouched and still gets the full read-back, verified by a dedicated test
+(`test_reaching_completion_for_the_first_time_still_gets_the_full_summary`) sitting right
+next to the fix's own test, specifically to make regressing "the real completion moment"
+while fixing this impossible to miss.
+
+No existing test file tested `conversation/orchestrator.py` directly (only indirectly,
+through the full `_process_turn` pipeline in `test_process_turn.py`) -- new
+`test_orchestrator.py`, reusing `test_machine.py`'s own `_PARCEL_BOOKING` fixture pattern
+to drive a conversation state machine to a genuinely COMPLETE booking (an *empty* booking
+manually stamped `phase=COMPLETE` does not actually stay complete once `sweep_and_select`
+re-checks it against real completeness rules -- caught by a first attempt at this test
+that used exactly that shortcut and failed for the right reason). "Thank you" and five
+variants also added to `test_scope_guard_live.py` as permanent, parametrized regression
+coverage at the guard layer, even though that layer was not where the real bug was --
+the layer that would catch a future regression first is worth locking in either way.
+
+**Request 2: when the agent is unsure about a location, suggest pasting a map link.**
+Direct product idea, and a good one: `services/maps.py` (Phase 3.8) already exists and
+sidesteps STT mishearing entirely, so once a spoken clarification has already failed once,
+mentioning it is a genuinely more helpful next move than asking the same way again.
+Deliberately not offered on the *first* ambiguous answer -- that would read as the agent
+over-reacting to one unclear reply before even trying the obvious thing (asking again).
+`conversation/templates.py`'s `_ambiguity_question` now appends " Or you can just paste a
+Google Maps link for the exact spot." once `Field.clarify_attempts >= 2` (the point
+`domain/policy.py`'s `record_question_asked` reaches on the *second* time the same field
+comes up ambiguous -- confirmed by tracing the exact call order in `machine.advance`:
+`sweep_and_select` selects the decision, *then* `record_question_asked` bumps the counter
+for it, so the count at render time already reflects the ask about to happen), and only
+for `pickup.locality`/`drop.locality` -- a vague date or quantity has no map-link
+equivalent to offer instead.
+
+First test attempt got the sequencing backwards (called `record_question_asked` twice
+*before* `sweep_and_select`, which tripped `sweep_and_select`'s own internal give-up check
+before the field was ever selected as a decision at all -- `clarify_attempts` reaching the
+give-up threshold and reaching "about to ask a second time" look identical from the
+field's value alone, only the calling order distinguishes them). Rewritten to mirror
+`machine.advance`'s real select-then-record order exactly; three tests now cover no
+suggestion on the first ask, the suggestion appearing on the second, and it never
+appearing for a non-locality ambiguity. Full non-live suite green.
 
 ---
 

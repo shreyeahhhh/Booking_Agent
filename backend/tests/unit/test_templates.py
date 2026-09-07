@@ -315,6 +315,47 @@ def test_ambiguity_question_is_keyed_by_reason():
     assert "Kochi" in question
 
 
+def test_ambiguity_question_does_not_suggest_a_map_link_on_the_first_ask():
+    """Suggesting an alternative before even trying to clarify once by voice
+    would read as the agent over-reacting to a single unclear answer.
+    Mirrors conversation/machine.py's real sequence: sweep_and_select picks
+    the decision, *then* record_question_asked bumps the counter for it --
+    front-loading the bump would trip sweep_and_select's own give-up check
+    before the field is ever selected at all."""
+    state = _apply(BookingState(), Patch(op=PatchOp.SET, field="drop.locality", value="Kochi"))
+    state, decision = policy.sweep_and_select(state)
+    state = policy.record_question_asked(state, decision.field_path)
+    question = compose_question(decision, state)
+    assert "Google Maps" not in question
+
+
+def test_ambiguity_question_suggests_a_map_link_after_the_second_ask():
+    """Live-verified concrete request: once clarifying by voice has already
+    failed once, offering the map-link input (services/maps.py) sidesteps
+    STT mishearing entirely rather than asking the same way a third time."""
+    state = _apply(BookingState(), Patch(op=PatchOp.SET, field="drop.locality", value="Kochi"))
+    state, decision = policy.sweep_and_select(state)  # turn 1
+    state = policy.record_question_asked(state, decision.field_path)
+
+    state, decision = policy.sweep_and_select(state)  # turn 2 -- still ambiguous
+    state = policy.record_question_asked(state, decision.field_path)
+    question = compose_question(decision, state)
+    assert "Google Maps" in question
+
+
+def test_ambiguity_question_never_suggests_a_map_link_for_a_non_locality_field():
+    state = _apply(
+        BookingState(),
+        Patch(op=PatchOp.SET, field="schedule.date", value="soon", ambiguity="relative_date"),
+    )
+    state, decision = policy.sweep_and_select(state)
+    state = policy.record_question_asked(state, decision.field_path)
+    state, decision = policy.sweep_and_select(state)
+    state = policy.record_question_asked(state, decision.field_path)
+    question = compose_question(decision, state)
+    assert "Google Maps" not in question
+
+
 def test_conflict_question_mentions_both_values():
     state = _apply(
         BookingState(), Patch(op=PatchOp.SET, field="pickup.locality", value="Koramangala")
