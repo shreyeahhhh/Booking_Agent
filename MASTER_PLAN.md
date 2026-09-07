@@ -1502,14 +1502,42 @@ appearing for a non-locality ambiguity. Full non-live suite green.
 
 | # | Step | Acceptance | Status |
 |---|---|---|---|
-| 4.1 | Single-service deploy (FastAPI serves the built frontend bundle) | Public HTTPS URL loads the app; `GROQ_API_KEY` and every other `.env.example` variable set on the **hosting platform's own dashboard**, not only in a local `.env` -- confirmed by `/api/health` reporting `llm_configured: true` on the deployed URL itself, not just locally | ⏳ Image built and locally verified (below); actually deploying to a chosen host is the remaining step |
-| 4.2 | Microphone works on the deployed origin | Verified in a fresh browser profile, over the deployed HTTPS URL (`getUserMedia` is blocked on plain HTTP everywhere except `localhost`, so this can only be genuinely verified post-deploy, not in local dev) | ⏳ Blocked on 4.1 by construction |
-| 4.3 | Cold-start mitigation | Either a warm instance or an explicit "waking up" UI state | ✅ UI state (`isSlowStart`) built; not yet observed against a real cold host |
+| 4.1 | Single-service deploy (FastAPI serves the built frontend bundle) | Public HTTPS URL loads the app; `GROQ_API_KEY` and every other `.env.example` variable set on the **hosting platform's own dashboard**, not only in a local `.env` -- confirmed by `/api/health` reporting `llm_configured: true` on the deployed URL itself, not just locally | ✅ Live at https://porter-booking-agent.onrender.com/ (Render). Verified live, not assumed: `/api/health` returns `llm_configured: true` and `tts_configured: true`, the real page (title, correct built JS/CSS asset hashes matching the latest local build) loads, both asset bundles serve `200`. Caught and fixed a real deploy-blocking bug in the same pass -- see below. |
+| 4.2 | Microphone works on the deployed origin | Verified in a fresh browser profile, over the deployed HTTPS URL (`getUserMedia` is blocked on plain HTTP everywhere except `localhost`, so this can only be genuinely verified post-deploy, not in local dev) | ⏳ Still outstanding -- this sandboxed environment cannot exercise a real microphone or grant a real browser permission prompt; needs a personal pass on the live URL |
+| 4.3 | Cold-start mitigation | Either a warm instance or an explicit "waking up" UI state | ✅ UI state (`isSlowStart`) built; the one live check made post-deploy returned in ~1.1s (instance already warm), so genuine cold-start behaviour still has not been directly observed |
 | 4.4 | Error handling pass | Every external call has a timeout, a retry and a spoken degraded fallback | ✅ Rate-limit backoff added (`app/retry.py`); timeout/retry/fallback already existed since phase 3 |
 | 4.5 | Session TTL sweep | Memory does not grow unbounded | ✅ |
 
 **Acceptance:** a link that a stranger can open and complete a booking through, and that
 degrades gracefully when STT, the LLM or TTS fails.
+
+**4.1 actually deployed, on Render -- and a pre-flight review before connecting the repo
+caught a real bug the earlier "verified locally" pass had missed entirely.**
+`.dockerignore`'s `*.md` rule matches recursively (confirmed against Docker's own
+documented pattern-matching semantics before touching anything, not assumed from
+memory), which was silently excluding `backend/app/llm/prompts/extractor.md` --
+a real runtime asset `llm/prompt_builder.py` reads from disk at import time, not
+documentation, along with the intentionally-excluded `README.md`/`MASTER_PLAN.md`/
+`docs/`. The earlier local-verification pass only exercised `/api/health` and the
+static frontend (neither touches the extractor's prompt-loading path at all), so this
+would have built cleanly, deployed cleanly, passed the health check, and then thrown
+`FileNotFoundError` on the very first real conversation turn -- the app's actual core
+function, failing in exactly the way a quick pre-deploy smoke test would not catch.
+Fixed with a targeted negation (`!backend/app/llm/prompts/*.md`, placed after the
+broad exclusion so it is the last matching pattern -- Docker's own documented rule),
+verified by tracing every pattern in the final file against the target path by hand
+and confirming it is the only file in that directory.
+
+Deployed and verified live immediately after: `/api/health` returns both
+`llm_configured: true` and `tts_configured: true` (env vars correctly set on Render's
+own dashboard, not just locally -- the exact failure mode this acceptance criterion
+exists to catch), the real page loads with the correct title and references the exact
+built JS/CSS asset hashes the last local build produced (confirming the deployed image
+is running the latest code, not something stale), and both asset bundles serve `200`.
+Could not get a browser screenshot -- this session's Browser tool still cannot navigate
+to external URLs (the same limitation flagged at the end of an earlier session) -- so
+verification here is via direct HTTP checks (`curl`), not a visual confirmation; 4.2's
+mic-permission check specifically still needs a real browser and is left open below.
 
 **4.4 and 4.5 needed no live call to build -- both are pure, deterministic logic checkable
 by the suite -- but 4.4 specifically closes a gap this file flagged as future work in three
@@ -1666,5 +1694,14 @@ origin and protocol for free.
 ## Out of scope
 
 Recorded so the decision is not silently revisited: user accounts, booking persistence,
-price estimation, maps/geocoding, contact-number capture, multi-language, streaming STT,
-full-duplex audio, mobile-responsive polish, and any database.
+price estimation, ~~maps/geocoding~~ (revised in phases 3.7-3.9 -- see below), contact-number
+capture, multi-language, streaming STT, full-duplex audio, mobile-responsive polish, and
+any database.
+
+**Maps/geocoding turned out to be in scope after all**, added deliberately once STT
+mishearing of Indian place names proved to be a recurring, real problem no amount of
+prompt tuning fully eliminated -- an exact pasted map link (`services/maps.py`)
+sidesteps speech recognition for a location entirely rather than trying to normalise
+around its mistakes. Struck through above rather than silently deleted, since this
+document's own point is that a scope decision should be visibly revised, not quietly
+reversed.

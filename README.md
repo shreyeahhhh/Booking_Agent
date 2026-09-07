@@ -190,16 +190,19 @@ cd frontend && npm run typecheck
 
 ## Deployment
 
-**Live URL:** _pending — the image is ready to deploy (below); this line gets the real
-link once it's live on a host._
+**Live URL:** [porter-booking-agent.onrender.com](https://porter-booking-agent.onrender.com/)
+— deployed on Render, built from the `Dockerfile` at the repo root. Verified live, not
+just assumed: `/api/health` returns `llm_configured: true` and `tts_configured: true`,
+the real page (title, built JS/CSS bundles) loads correctly, and both asset bundles
+serve `200`.
 
 A single-stage [`Dockerfile`](Dockerfile) at the repo root builds the frontend and
 serves it, plus the API, from one FastAPI process on one origin — the same
 single-service shape `app/main.py` and this README's "production shape locally"
 section above already run in dev. It works on any host that deploys from a
-Dockerfile (Render, Railway, Fly.io, Google Cloud Run, a plain VPS, ...); pick
-whichever is convenient. Verified locally (not just written and assumed): a fresh,
-isolated virtualenv installing only `requirements.txt`, then serving the real built
+Dockerfile (Render, Railway, Fly.io, Google Cloud Run, a plain VPS, ...); this
+project uses Render. Verified locally before deploying too: a fresh, isolated
+virtualenv installing only `requirements.txt`, then serving the real built
 `frontend/dist` through `uvicorn app.main:app` exactly as the image's `CMD` does,
 correctly returned both `/api/health` and the app's `index.html`.
 
@@ -222,11 +225,14 @@ Whichever host is chosen:
    access — `getUserMedia` requires HTTPS everywhere except `localhost`, so this is
    the first point this can be genuinely tested at all.
 
-Not yet done: cold-start behaviour (a free-tier host that spins down when idle can
-take tens of seconds to wake for the first request) has a UI state for it
-(`isSlowStart` in `App.tsx`) but has not been observed against a real cold host yet;
-session TTL sweeping (`SESSION_TTL_SECONDS`) is implemented but likewise only
-exercised by its unit tests so far, not a real multi-day-idle deployment.
+Not yet done: microphone access on the deployed HTTPS origin (`getUserMedia` cannot be
+tested from this sandboxed environment, only by a real browser — this needs a personal
+pass on the live URL above). Cold-start behaviour (Render's free tier spins down after
+15 minutes idle) has a UI state for it (`isSlowStart` in `App.tsx`) but has not yet been
+directly observed against a real cold instance — the one live check made so far returned
+in ~1.1s, meaning the instance was already warm at the time, not proof either way. Session
+TTL sweeping (`SESSION_TTL_SECONDS`) is implemented but likewise only exercised by its
+unit tests so far, not a real multi-day-idle deployment.
 
 ## Assumptions and limitations
 
@@ -237,8 +243,17 @@ Tracked as they are made rather than reconstructed at the end.
 - **No contact capture.** Name and phone are out of scope: capturing digits over voice is
   a speech-recognition accuracy problem, not a conversation-design one, and would add
   failure modes while demonstrating nothing the brief tests.
-- **No geocoding.** Localities are captured as text; there is no pincode or lat/long
-  resolution, and no validation that a place actually exists.
+- **Geocoding is opt-in, not automatic.** A spoken locality is still captured as plain
+  text with no validation that the place exists — but the user can paste a Google Maps
+  link for an exact pickup/drop point instead (`POST /session/{id}/location`), which
+  resolves to real coordinates and, where available, a reverse-geocoded name
+  (`services/maps.py`, via Nominatim/OpenStreetMap). Voice input alone still has no
+  geocoding behind it.
+- **Browser: built and tested against Chrome.** `MediaRecorder`/`getUserMedia` support
+  and behaviour differs across browsers; this project targets Chrome specifically and has
+  not been verified on Firefox or Safari. A fresh-profile mic-permission check on the
+  live deployed URL (as opposed to local dev) is still outstanding -- see the Deployment
+  section above.
 - **No pricing.** Producing a fare would require a rate card this project does not have.
 - **Sessions are in-memory.** A server restart loses in-flight conversations. This is a
   deliberate trade for a single-session demo; the store sits behind an interface that a
