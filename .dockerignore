@@ -29,3 +29,12 @@ backend/tests/.scratch/
 .vscode/
 *.md
 docs/
+# Exception: extractor.md is a real runtime asset (llm/prompt_builder.py
+# reads it from disk via Path(__file__).parent / "prompts" / "extractor.md"
+# at import time, not embedded in code), not documentation -- the bare
+# "*.md" rule above matches recursively (confirmed against Docker's own
+# .dockerignore docs, not assumed), so without this negation the deployed
+# image would build and pass /api/health fine, then raise FileNotFoundError
+# on the very first real conversational turn that reaches the extractor.
+# Must come after "*.md": the last matching pattern wins.
+!backend/app/llm/prompts/*.md
