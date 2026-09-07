@@ -41,38 +41,9 @@ export function formatFloor(floor: number | null): string {
   return `${floor}${suffix} floor`;
 }
 
-/** True if `value` is recognisable within what STT actually heard -- i.e.
- * nothing worth flagging. Evidence naturally wraps a value in surrounding
- * words ("a sofa" for "sofa"), which is not a mis-transcription and must
- * not be flagged as one on every field. Mirrors the backend's identical
- * check: conversation/summary.py's `_mentions_locality` and
- * conversation/templates.py's `_mentions`. */
-function mentionsValue(rawText: string, value: string): boolean {
-  return rawText.trim().toLowerCase().includes(value.trim().toLowerCase());
-}
-
-/** Appends `(heard as "...")` when `evidence` diverges from `value` -- the
- * one place a corrected place or item name shows the model's normalisation
- * was a guess rather than silently trusting it. See extractor.md's Rule 10
- * (localities) and its generalisation to goods.items. */
-export function withHeardAs(value: string, evidence: string | null): string {
-  if (!evidence || mentionsValue(evidence, value)) return value;
-  return `${value} (heard as "${evidence}")`;
-}
-
-export function formatItems(
-  items: Array<{ name: string; quantity: number; evidence: string | null }>,
-): string {
+export function formatItems(items: Array<{ name: string; quantity: number }>): string {
   return items
-    .map((item) => {
-      const label = item.quantity > 1 ? `${item.quantity} ${item.name}` : item.name;
-      // Divergence is checked against the bare name, not the quantity-decorated
-      // label -- "2 cupboards" vs. evidence "two cupboards" is not a mishearing.
-      if (item.evidence && !mentionsValue(item.evidence, item.name)) {
-        return `${label} (heard as "${item.evidence}")`;
-      }
-      return label;
-    })
+    .map((item) => (item.quantity > 1 ? `${item.quantity} ${item.name}` : item.name))
     .join(", ");
 }
 

@@ -7,21 +7,17 @@
  */
 
 import type { BookingStateShape } from "./api";
-import { displayValueOrNull, formatDateLong, formatFloor, formatItems, prettify, withHeardAs } from "./format";
+import { displayValueOrNull, formatDateLong, formatFloor, formatItems, prettify } from "./format";
 
 export type Row = { label: string; value: string };
 export type Section = { title: string; rows: Row[] };
 
 function addressSection(title: string, address: BookingStateShape["pickup"]): Section {
   const rows: Row[] = [];
-  // Deliberately not displayValueOrNull: a corrected locality is either a
-  // spoken mishearing fix (withHeardAs below already shows that divergence)
-  // or a map-pin overwrite of a stale/wrong earlier value -- in neither
-  // case does re-surfacing the discarded old value as "(was: ...)" add
-  // anything, and for a map pin specifically the old value was often
-  // exactly the kind of hallucinated place name this app exists to correct.
+  // Deliberately not displayValueOrNull: a corrected locality's discarded
+  // old value adds nothing shown as "(was: ...)" -- see MASTER_PLAN.md.
   const locality = address.locality.value;
-  if (locality) rows.push({ label: "Location", value: withHeardAs(locality, address.raw_text.value) });
+  if (locality) rows.push({ label: "Location", value: locality });
   const floor = displayValueOrNull(address.floor, formatFloor);
   if (floor) rows.push({ label: "Floor", value: floor });
   const lift = displayValueOrNull(address.has_lift, (v) => (v ? "Yes" : "No"));

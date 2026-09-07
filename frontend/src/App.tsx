@@ -5,7 +5,7 @@ import { createSession, postTurn } from "./api";
 import type { SpeechHandle } from "./audio";
 import { speak } from "./audio";
 import ConfirmationModal from "./ConfirmationModal";
-import { displayValue, formatDate, formatItems, prettify, withHeardAs } from "./format";
+import { displayValue, formatDate, formatItems, prettify } from "./format";
 import LocationLinkInput from "./LocationLinkInput";
 import ReviewCard from "./ReviewCard";
 import { useRecorder } from "./useRecorder";
@@ -65,12 +65,12 @@ function rowsFrom(state: BookingStateShape | null): Row[] {
       // nothing as "(was: ...)" here -- see bookingSections.ts's identical
       // choice for the confirmation modal / review card.
       label: "From",
-      value: withHeardAs(state.pickup.locality.value ?? "Say where", state.pickup.raw_text.value),
+      value: state.pickup.locality.value ?? "Say where",
       filled: !!state.pickup.locality.value,
     },
     {
       label: "To",
-      value: withHeardAs(state.drop.locality.value ?? "Say where", state.drop.raw_text.value),
+      value: state.drop.locality.value ?? "Say where",
       filled: !!state.drop.locality.value,
     },
     { label: "Stuff", value: items || "Say what", filled: items.length > 0 },
