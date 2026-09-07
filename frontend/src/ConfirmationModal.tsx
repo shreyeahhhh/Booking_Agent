@@ -6,9 +6,10 @@ import { sectionsFrom } from "./bookingSections";
 type ConfirmationModalProps = {
   state: BookingStateShape;
   onClose: () => void;
+  onStartNewBooking: () => void;
 };
 
-export default function ConfirmationModal({ state, onClose }: ConfirmationModalProps) {
+export default function ConfirmationModal({ state, onClose, onStartNewBooking }: ConfirmationModalProps) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -91,9 +92,14 @@ export default function ConfirmationModal({ state, onClose }: ConfirmationModalP
           )}
         </div>
 
-        <button type="button" className="pill-button pill-button--accent modal-card__done" onClick={onClose}>
-          Done
-        </button>
+        <div className="modal-card__actions">
+          <button type="button" className="pill-button modal-card__new-booking" onClick={onStartNewBooking}>
+            Book another move
+          </button>
+          <button type="button" className="pill-button pill-button--accent modal-card__done" onClick={onClose}>
+            Done
+          </button>
+        </div>
       </div>
     </div>
   );

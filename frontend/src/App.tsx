@@ -33,6 +33,19 @@ const BOOKING_CONFIRMED_TRANSCRIPT_LINE = "Booking confirmed — see the summary
 // detail lives now, structured and delimited instead of one run-on block.
 const REVIEW_TRANSCRIPT_LINE = "Here's everything so far — take a look.";
 
+// Shown only before the user has actually said anything (see the `turns`
+// check below -- NOT turns.length === 0: the opening greeting is itself
+// already one turn by the time this ever renders, so that condition would
+// never actually be true in practice). An evaluator or first-time visitor
+// with the mic open and nothing to say is a real, common demo failure mode
+// this has nothing to do with the agent
+// itself. A complete example rather than a fragment, so reading it aloud
+// verbatim demonstrates several things at once in one breath: multi-fact
+// extraction, and the mishearing-normalisation fix ("bed cot" is a real
+// item Whisper has been observed to mishear -- see MASTER_PLAN.md).
+const DEMO_SUGGESTION =
+  "I need to move 2 bed cots and some furniture from Koramangala to Whitefield, tomorrow evening.";
+
 const MIME_EXTENSIONS: Record<string, string> = {
   "audio/webm": "webm",
   "audio/ogg": "ogg",
@@ -161,6 +174,52 @@ export default function App() {
     }
   }, []);
 
+  // Shared by the initial mount below and startNewBooking further down --
+  // starting a new booking is exactly "create a session and speak the
+  // greeting" again, the same request the page's very first load makes.
+  const beginSession = useCallback(
+    (showColdStartHint: boolean) => {
+      // A free host that spun down while idle can take tens of seconds to
+      // wake for this very first request -- see COLD_START_HINT_MS above.
+      // Only armed on the initial mount: a "new booking" click happens well
+      // after the instance is already warm, so it would never fire anyway.
+      const coldStartTimer = showColdStartHint
+        ? window.setTimeout(() => setIsSlowStart(true), COLD_START_HINT_MS)
+        : null;
+
+      return createSession()
+        .then((session) => {
+          if (coldStartTimer !== null) window.clearTimeout(coldStartTimer);
+          sessionIdRef.current = session.session_id;
+          setSessionId(session.session_id);
+          applyTurn(session);
+          playResponse(session.audio_chunks, session.tts_fallback, session.agent_text);
+        })
+        .catch(() => {
+          if (coldStartTimer !== null) window.clearTimeout(coldStartTimer);
+          setApiError("Could not reach the booking service. Refresh to try again.");
+        });
+    },
+    [applyTurn, playResponse],
+  );
+
+  // A voice "start over" already resets the conversation server-side
+  // (conversation.fastpath.MetaCommand.RESTART) -- this button is the same
+  // idea reachable by click instead of by saying it, for right after a
+  // booking completes. Resets every piece of local state the mount effect
+  // below would otherwise still be holding from the finished booking, then
+  // asks for a brand new session exactly like the very first page load did.
+  const startNewBooking = useCallback(() => {
+    stopSpeaking();
+    setShowConfirmation(false);
+    setShowReviewCard(false);
+    setApiError(null);
+    setTurns([]);
+    setBookingState(null);
+    setDone(false);
+    void beginSession(false);
+  }, [beginSession, stopSpeaking]);
+
   useEffect(() => {
     // Guards against React 19 StrictMode's dev-only mount -> cleanup ->
     // mount cycle, which would otherwise create two sessions per page load
@@ -176,26 +235,8 @@ export default function App() {
     // even though the network tab showed a correct 200 response.
     if (sessionRequestedRef.current) return;
     sessionRequestedRef.current = true;
-
-    // A free host that spun down while idle can take tens of seconds to
-    // wake for this very first request -- see COLD_START_HINT_MS above.
-    // Cleared in both branches below, so a fast, ordinary response never
-    // shows the hint at all.
-    const coldStartTimer = window.setTimeout(() => setIsSlowStart(true), COLD_START_HINT_MS);
-
-    createSession()
-      .then((session) => {
-        window.clearTimeout(coldStartTimer);
-        sessionIdRef.current = session.session_id;
-        setSessionId(session.session_id);
-        applyTurn(session);
-        playResponse(session.audio_chunks, session.tts_fallback, session.agent_text);
-      })
-      .catch(() => {
-        window.clearTimeout(coldStartTimer);
-        setApiError("Could not reach the booking service. Refresh to try again.");
-      });
-  }, [applyTurn, playResponse]);
+    void beginSession(true);
+  }, [beginSession]);
 
   // A pasted map link produces the exact same TurnResponse shape a voice
   // turn does (api/routes.py's submit_location_link mirrors /turn), so it
@@ -313,6 +354,12 @@ export default function App() {
           </div>
         </div>
 
+        {!turns.some((t) => t.speaker === "you") && (
+          <p className="demo-hint">
+            Not sure what to say? Try: <span className="demo-hint__quote">&ldquo;{DEMO_SUGGESTION}&rdquo;</span>
+          </p>
+        )}
+
         <div className="try__grid">
           {showReviewCard && bookingState ? (
             <ReviewCard state={bookingState} onClose={closeReviewCard} />
@@ -336,9 +383,14 @@ export default function App() {
             <div className="panel__header">
               <span className="panel__title">Your booking</span>
               {done ? (
-                <button type="button" className="panel__summary-button" onClick={() => setShowConfirmation(true)}>
-                  Summary
-                </button>
+                <div className="panel__header-actions">
+                  <button type="button" className="panel__summary-button" onClick={() => setShowConfirmation(true)}>
+                    Summary
+                  </button>
+                  <button type="button" className="panel__summary-button" onClick={startNewBooking}>
+                    New booking
+                  </button>
+                </div>
               ) : (
                 <span className="panel__hint">
                   {filledCount} of {rows.length}
@@ -493,7 +545,11 @@ export default function App() {
       </footer>
 
       {showConfirmation && bookingState && (
-        <ConfirmationModal state={bookingState} onClose={closeConfirmation} />
+        <ConfirmationModal
+          state={bookingState}
+          onClose={closeConfirmation}
+          onStartNewBooking={startNewBooking}
+        />
       )}
     </div>
   );

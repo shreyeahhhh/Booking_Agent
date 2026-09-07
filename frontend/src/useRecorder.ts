@@ -16,11 +16,12 @@ const FLOOR_ADAPT_RATE = 0.05; // how fast the floor follows the ambient level w
 const INITIAL_NOISE_FLOOR = 0.01; // conservative seed; corrects itself within a few frames
 // 700ms (MASTER_PLAN.md's original 3.5 acceptance criterion) was live-reported as cutting
 // real users off mid-sentence -- a thoughtful pause between clauses ("I need to move a
-// sofa... and two cupboards") is often comfortably longer than that. Raised once real-mic
-// use confirmed the risk register's own "VAD cuts the user off mid-sentence" row, still
-// well under a second so the agent does not feel unresponsive once someone actually stops.
-const SILENCE_DURATION_MS = 1100;
-const MAX_RECORDING_MS = 30_000; // safety net if speech is never detected at all -- raised alongside SILENCE_DURATION_MS so a longer pause tolerance still leaves room for a genuinely long utterance
+// sofa... and two cupboards") is often comfortably longer than that. Raised once to
+// 1100ms, still reported as too eager for a longer, multi-part utterance (several items,
+// a full address, a date all in one breath) -- raised further. A voice UI feeling slightly
+// slower to stop is a much smaller cost than cutting the user off mid-thought.
+const SILENCE_DURATION_MS = 1800;
+const MAX_RECORDING_MS = 45_000; // safety net if speech is never detected at all -- raised alongside SILENCE_DURATION_MS so the longer pause tolerance still leaves room for a genuinely long utterance
 
 const PREFERRED_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
 

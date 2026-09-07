@@ -204,6 +204,19 @@ button {
   margin-top: clamp(20px, 2.6vw, 32px);
 }
 
+.demo-hint {
+  margin: 18px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink-62);
+  max-width: 56ch;
+}
+
+.demo-hint__quote {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 .mic {
   display: flex;
   align-items: center;
@@ -413,6 +426,12 @@ button {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(17, 17, 16, 0.45);
+}
+
+.panel__header-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .panel__summary-button {
@@ -938,10 +957,16 @@ button {
   line-height: 1.4;
 }
 
-.modal-card__done {
-  width: 100%;
-  justify-content: center;
+.modal-card__actions {
+  display: flex;
+  gap: 10px;
   margin-top: 24px;
+}
+
+.modal-card__done,
+.modal-card__new-booking {
+  flex: 1 1 0;
+  justify-content: center;
 }
 
 /* ---- review card ----
