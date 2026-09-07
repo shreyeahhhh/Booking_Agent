@@ -54,16 +54,17 @@ answer to "how do you know you have met the requirements?"
 | Natural, conversational interaction | Composed acknowledgment + rotated question variants | `conversation/templates.py` | Manual voice matrix |
 | Ask relevant follow-up questions | Priority policy over unfilled slots | `domain/policy.py` | `test_policy.py` |
 | Identify missing information | Declarative `FieldSpec` table + completeness engine | `domain/specs.py`, `domain/completeness.py` | `test_completeness.py` |
-| Identify ambiguous information | Three independent detectors (model, validator, conflict) | `llm/schema.py`, `domain/reducer.py` | `test_ambiguity.py` |
+| Identify ambiguous information | Three independent detectors (model, validator, conflict) | `llm/schema.py`, `domain/reducer.py` | `test_reducer.py` (e.g. `test_bare_city_is_flagged_ambiguous_even_without_llm_flagging_it`), `test_completeness.py` |
 | Remember earlier information | Typed state is the source of truth; the model never owns it | `domain/state.py` | `test_reducer.py` |
-| Handle information in any order | Patches are field-addressed, not sequence-addressed | `domain/reducer.py` | `test_out_of_order.py` |
-| Handle corrections | `op: correct` + revision history + cascade invalidation | `domain/reducer.py` | `test_corrections.py` |
-| Avoid re-asking answered questions | Policy reads state, never history — filled slots are unaskable | `domain/policy.py` | `test_no_repeat.py` |
+| Handle information in any order | Patches are field-addressed, not sequence-addressed | `domain/reducer.py` | `test_reducer.py::test_out_of_order_patches_all_land_correctly` |
+| Handle corrections | `op: correct` + revision history + cascade invalidation | `domain/reducer.py` | `test_reducer.py` (correction/revision cases) |
+| Avoid re-asking answered questions | Policy reads state, never history — filled slots are unaskable | `domain/policy.py` | `test_policy.py::test_a_filled_slot_is_never_selected_again` |
 | Determine sufficiency | `can_enter_review()` guard, computed not judged | `conversation/machine.py` | `test_machine.py` |
 | Structured final summary | Deterministic renderer over state | `conversation/summary.py` | `test_summary.py` |
 | Review and confirm | `REVIEW ⇄ CORRECTING` phases | `conversation/machine.py` | Golden conversations |
-| Credentials not exposed to client | Single server-side `GROQ_API_KEY`; browser never calls a vendor | `app/config.py` | Code review |
-| Error handling | Timeout + retry + degraded fallback on every external call | `services/`, `llm/` | `test_failures.py` |
+| Credentials not exposed to client | Single server-side `GROQ_API_KEY`/`CARTESIA_API_KEY`; browser calls only this app's own `/api/*` routes, never a vendor directly | `app/config.py` | Code review; `/api/health` reports configuration without ever revealing a key |
+| Error handling | Timeout + retry + degraded fallback on every external call | `services/`, `llm/` | Distributed across each call site's own test file, not one shared one: `test_stt.py`, `test_tts.py`, `test_extractor.py`, `test_scope_guard.py`, `test_retry.py`, `test_process_turn.py` |
+| Stay in scope (not a general chatbot) | Cheap pre-filter before the extractor, plus a hardened boundary in the extractor's own prompt as a second layer | `llm/scope_guard.py`, `llm/prompts/extractor.md` | `test_scope_guard.py`, `test_scope_guard_live.py` |
 
 ---
 
