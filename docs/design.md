@@ -111,7 +111,7 @@ BookingState
 Address   : raw_text, locality, city, landmark, floor, has_lift
 Schedule  : date, time_window, exact_time, is_asap
 Goods     : category, items[], load_hint
-Item      : name, quantity, size_hint
+Item      : name, quantity, size_hint, evidence, turn
 Service   : vehicle_type, helpers_required, needs_packing, needs_disassembly
 ```
 
@@ -186,6 +186,35 @@ actually makes this "(heard as ...)" rendering fire in practice now, not just ex
 unused code path. The same rule explicitly still refuses to force a fragment that does not
 clearly name one specific place (a bare state name, or hallucination-shaped noise) into a
 confident match; those keep going through the ordinary vague-answer/ambiguity path instead.
+
+**The same mishearing-normalisation principle extends to `goods.items`, with a different
+fallback.** Item names are just as prone to STT mishearing as place names ("fridge" heard
+as "bridge", "geyser" -- a common Indian-English term for a water heater -- heard as
+"geezer"), and live user testing found the extractor wrongly recognising items for exactly
+this reason. `Item` is deliberately not `Field[T]`-wrapped (it is managed as a list, see
+its docstring in `domain/state.py`), so it has no `ambiguity`/`status` of its own --
+`AmbiguityReason.UNKNOWN_ITEM` and its reprompt template in `conversation/templates.py`
+exist but are unreachable dead code for the real item list, since `_apply_items_patch`
+never reads `patch.ambiguity` and `_ambiguity_question` only resolves scalar `Field[T]`
+paths. So the extractor prompt's items guidance cannot ask for an ambiguity flag the way
+Rule 10 does for locality; instead it asks the model to omit the patch entirely when no
+specific real item is a confident reading, which the reducer already handles correctly
+with no new code. `Item.evidence` already existed and was already populated on every
+append/correct (`reducer._coerce_item`); what was missing was any "(heard as ...)"
+rendering for it. `conversation/templates.py::format_item` now renders it the same way
+`summary._render_address` does for locality. Live-confirmed: "a bridge and a cot" ->
+`fridge` appended with `evidence="a bridge"`, `cot` untouched; "a splendorak" (no real
+referent) -> no item appended at all, confirming the omit-the-patch fallback actually
+fires rather than the model force-matching to the nearest real word.
+
+**That same transparency never reached the frontend.** `frontend/src/api.ts`'s
+`AddressShape`/`ItemShape` omitted `raw_text`/`evidence` entirely, even though both were
+already on the wire (`routes.py`'s `TurnResponse.state` is an untyped
+`booking.model_dump(mode="json")` of the real domain state) -- so a silently "corrected"
+locality or item showed no divergence signal anywhere in the UI, only in the backend's own
+written summary that this UI never surfaces. `format.ts::withHeardAs` mirrors the backend's
+substring-divergence check and is now wired into both `App.tsx`'s always-visible panel and
+`ConfirmationModal.tsx`'s address/items sections.
 
 **Silence and noise never reach the LLM.** `services/stt.is_noise` classifies an empty or
 hallucinated transcript before anything downstream runs, so a silent mic never burns an

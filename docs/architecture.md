@@ -122,6 +122,7 @@ One call, one response. No chaining, no agent loop, no reflection pass.
 | **Deciding what is missing / what to ask next** | Completeness engine + policy |
 | **All state transitions** | Guard functions |
 | Bare number answer to a numeric slot (digit, cardinal or ordinal word) | Gated on expected answer type |
+| A pasted Google Maps link for pickup/drop (`POST /session/{id}/location`) | URL parsing (`services/maps.py`) |
 
 ### Fast paths fail open
 

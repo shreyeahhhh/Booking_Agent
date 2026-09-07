@@ -995,6 +995,320 @@ probe). Both fragments are now the prompt's own explicit negative example, which
 strongest bound available without a live re-run -- worth confirming with a real call once
 the daily quota has room again, rather than treated as settled.
 
+**Follow-up, once the daily quota recovered: the pending re-confirmation above passed, and
+the same mishearing-normalisation principle was generalised from localities to
+`goods.items`.** Live user testing after the Cartesia migration reported the same class of
+failure on items, not just places -- STT mishears a real household item as a different
+real (or nonsense) word, and nothing in the prompt told the extractor to be suspicious of
+an item name the way Rule 10 already made it suspicious of a locality. Unlike locality,
+`goods.items` has no `Field[T]`/`ambiguity` plumbing at all (`Item` is a plain list entry
+by design -- see its docstring in `domain/state.py`); a live grep before writing anything
+confirmed `AmbiguityReason.UNKNOWN_ITEM` and its reprompt template in
+`conversation/templates.py` are unreachable dead code for this list, since
+`_apply_items_patch` never reads `patch.ambiguity` and `_ambiguity_question` only resolves
+scalar `Field[T]` paths. So the items-specific instruction added to `extractor.md`'s
+`goods.items` block cannot ask for an ambiguity flag the way Rule 10 does for locality; it
+asks for the patch to be omitted entirely when no specific real item is a confident
+reading, which is the one fallback the existing reducer already supports correctly with no
+new plumbing. `Item.evidence` turned out to already exist and already be populated
+correctly through both append and correct (`reducer._coerce_item`) -- it just had no
+"(heard as ...)" rendering anywhere, unlike locality's `raw_text`. Added one, mirroring
+`summary._render_address`/`_mentions_locality` exactly: `conversation/templates.py`'s
+`format_item` now appends `(heard as "...")` when `Item.evidence` diverges from the
+resolved name, using a small local `_mentions` helper (kept module-local rather than
+importing summary.py's private one, to avoid a cross-module coupling for a two-line check).
+
+**A second, separate gap surfaced by the same investigation: the transparency this project
+already had for locality never reached the actual UI.** `frontend/src/api.ts`'s
+`AddressShape` omitted `raw_text` entirely and `ItemShape` omitted `evidence` -- both
+already present on the wire (`routes.py`'s `TurnResponse.state` is a full, untyped
+`booking.model_dump(mode="json")`, confirmed by reading the route directly rather than
+assumed), just never typed or read by the frontend. `ConfirmationModal.tsx` and `App.tsx`'s
+always-visible panel were therefore both showing a silently "corrected" locality with no
+indication a correction had happened, even though the backend's own written summary
+(`conversation/summary.py`, never actually surfaced to this UI) has carried that signal
+since step 2.7. Added `raw_text`/`evidence` to the two TS shapes and a shared
+`format.ts::withHeardAs` helper (same substring-divergence check as the backend, mirrored
+rather than shared across the language boundary), wired into both the live panel's
+From/To rows and the confirmation modal's address section, plus `formatItems` for items.
+
+**Verified live and in the browser, not assumed.** A probe against the real extractor
+(4 cases, one call each, all passing first try): "I need to move a bridge and a cot."
+-> `fridge` appended with `evidence="a bridge"`, `cot` untouched; "Please also pack the
+geezer in the bathroom." -> `geyser` with `evidence="geezer"` (a real, well-documented
+Indian-English STT mishearing -- geyser meaning water heater); "There's an almirah and a
+dressing table too." -> both appended unchanged, confirming the new rule does not
+over-fire when the transcription is already correct; "I also need to move a splendorak."
+(nonsense, no real referent) -> zero items appended, confirming the omit-the-patch fallback
+actually fires rather than the model force-matching to the nearest real word. The same
+probe re-ran the two locality cases pending since the entry above: "Koro Mengala" still
+normalises to "Koramangala" with evidence kept, and "Krala, Kerala." still stays
+`ambiguity=vague_location` at confidence 0.4 rather than a forced match -- so the daily-quota
+caveat above is now resolved, not just superseded. All four new cases are locked into
+`tests/unit/test_extractor_mishearing_live.py` (marked `llm`, real API calls, excluded from
+the default test run same as the project's other live suites) as permanent regression
+coverage, closing the gap the original Rule 10 work left of verifying once from a
+scratchpad and never re-checking. The frontend rendering was verified by loading the
+actual dev server in a real browser (the landing-page widget-visibility fix from the
+previous session was also confirmed visually here for the first time) and executing the
+live, Vite-served `format.ts` module directly against representative data -- not a
+hand-run mental trace -- confirming `formatItems`/`withHeardAs` produce exactly
+`fridge (heard as "a bridge")`, a silent `cot`, and `Koramangala (heard as "Koro
+Mengala")` as designed.
+
+**Same sitting, a separate report: the REVIEW-phase "is this all correct?" turn was a
+wall of text with no delimiters, and reused nothing from the confirmation-modal work.**
+`orchestrator.compose_response` builds `agent_text` for `Phase.REVIEW` exactly the way it
+does for `Phase.COMPLETE` -- `f"{summary.render_summary(booking)}\n\n{closing_line}"`, one
+run-on paragraph -- but only COMPLETE ever got special frontend treatment
+(`BOOKING_CONFIRMED_TRANSCRIPT_LINE` + `ConfirmationModal`). REVIEW's identical wall of
+text was still being dumped raw into the small transcript panel. Fixed the same way
+COMPLETE already was, not a new pattern: a `REVIEW_TRANSCRIPT_LINE` short line for the
+transcript, and a new `ReviewCard.tsx` for the structured detail -- extracting
+`ConfirmationModal.tsx`'s section-building code into a shared `bookingSections.ts` first so
+the two screens (one mid-conversation and still changeable, one terminal) can't drift
+apart on what a "pickup" or "schedule" section actually contains, the same anti-drift
+reasoning behind extracting `format.ts` in the previous session.
+
+Deliberately not the confirmation modal reused with different copy. `ConfirmationModal` is
+a `position: fixed; inset: 0` backdrop -- fine for COMPLETE, where the conversation is over,
+but REVIEW is exactly the phase where the user is expected to keep talking (a correction,
+or a plain "yes"), and a full backdrop would sit on top of the mic button with a
+`z-index: 100` fixed overlay, silently breaking the one interaction this screen exists to
+support. `ReviewCard` instead renders inline in the transcript panel's own `try__grid` slot
+-- same layout slot, so nothing else shifts -- leaving the mic (in `.hero__controls`,
+outside that grid entirely) fully reachable throughout. It also gets its own visual
+language on purpose (lime background, dashed section rules, a "Quick check" / "Sound
+right?" eyebrow-and-prompt pair) rather than the confirmation modal's black/orange
+"Booked. That's it." styling -- the two screens mean opposite things (still open to change
+vs. done) and were reading as the same kind of box before this.
+
+One real gap found *by* building this, not before it: `ConfirmationModal` renders
+`notes[]`/`assumptions[]` outside its shared section list, so the first cut of
+`ReviewCard` -- built from `bookingSections.ts` alone -- silently dropped both. An
+assumption (system-recorded when a clarification is abandoned, e.g. "Could not fully
+clarify drop location; kept as stated: Koti.") is arguably *more* load-bearing at the
+review moment than at final confirmation, since it is precisely the kind of thing "is this
+all correct?" exists to let the user catch. Caught by building a real, multi-field booking
+through the actual extractor (text utterances straight into `orchestrator.process_utterance`,
+bypassing STT the same way this project's own text REPL always has) up to `Phase.REVIEW`
+and looking at the real resulting state, rather than trusting an empty-happy-path mental
+model -- added matching `notes`/`assumptions` rendering to `ReviewCard` before calling it
+done.
+
+**Verified in the actual browser against real data, not a mocked shape.** Ran a real
+three-turn conversation ("a bridge, a cot and two cupboards from Koro Mengala to Koti" /
+"third floor, there's a lift, drop is ground floor" / "Monday morning") through the real
+extractor, producing a real `BookingState` with a live mishearing correction
+(`fridge`/evidence `"a bridge"`), a real recorded assumption, and real inferred
+vehicle/helpers -- then loaded that exact state into the running app to screenshot
+`ReviewCard` rendering it: sections delimited and labelled, the "(heard as ...)" divergence
+visible on both `Location` and `Items`, the assumption set off in its own dashed box, and
+the mic button still fully visible and unobstructed above it the whole time.
+
+**A follow-up user report claimed the item fix was not working ("random rubbish" still
+filling the item list) and that floor/lift/disassembly questions had stopped being asked
+at all -- worth splitting into two separate questions before assuming two separate bugs.**
+
+The floor/lift/disassembly report is fully explained by code already in place, not a new
+defect: `specs._goods_need_floor_handling` requires `goods.category` to be FURNITURE,
+APPLIANCES or HOUSEHOLD_MIXED, which `inference.infer_category` only sets when an item
+*name* matches its furniture/appliance keyword lists; `specs._needs_disassembly_check`
+independently requires an item name containing "bed"/"wardrobe"/"cupboard"/"almirah"/
+"sofa". If the item names in state are garbled ("farliters", "nature"), none of these
+match, `infer_category` falls through to `GoodsCategory.OTHER`, and every one of those
+three questions correctly (from the code's own logic) judges itself not needed -- the
+system is behaving as designed given wrong inputs, not skipping questions it should ask.
+This traces to a single root cause, not two: fix the item names and this resolves itself
+with no separate code change. Already have positive proof this path works: the multi-turn
+probe two entries above, with real items (fridge/cot/cupboard), both accepted the stated
+floor/lift and had the agent ask "Does anything need to be taken apart first -- like a bed
+frame?" unprompted on the very next turn.
+
+The item-recognition report itself is the harder question: is the prompt fix from earlier
+this session not actually deployed for this user (the `uvicorn --reload`-does-not-watch-
+`.md`-files caveat, already flagged once), or does it have a real remaining gap? Re-tested
+against the *current, already-shipped* prompt with two utterances closer to the reported
+shape than the earlier single-word cases -- several garbled words in one utterance, inside
+a real item-listing sentence frame, which is harder because the sentence grammar itself
+reads as a confident item list even when the words in it do not: "I have a jalibax, some
+blenty and a formicula to shift." -> zero items appended (full rejection, correct); "I need
+to move a farliters, some clothes, a bedcot and a nature." -> `clothes` kept, `farliters`
+and `nature` correctly dropped, `bedcot` normalised to `bed cot` with evidence kept (a
+defensible reading of a genuinely ambiguous compound, and transparently marked either way).
+Both cases now locked into `test_extractor_mishearing_live.py` as permanent regression
+coverage alongside the earlier ones. **This is evidence the shipped fix already handles the
+reported failure shape correctly** -- which points at the stale-server explanation as the
+more likely cause of what was actually observed, though this cannot be fully confirmed
+without knowing whether that user session's backend process had been restarted since the
+prompt file changed. Further live A/B testing (in particular, whether raising
+`reasoning_effort` from "low" to "medium" on the extractor call would improve judgement
+further, one weak data point suggested it might) was cut short by the same Groq daily
+token quota hitting its ceiling again (197,715+/200,000) mid-probe -- not pursued further
+without stronger evidence it is actually needed, per this project's "verify live, don't
+assume" rule cutting against a change made to compensate for a problem that may not exist
+once the server-restart variable is actually controlled for.
+
+---
+
+## Phase 3.7 — Exact pickup/drop via a pasted Google Maps link
+
+**User request: let the customer give an exact pickup/drop point as a Google Maps link,
+instead of only ever saying a locality out loud.** The real motivation is not a missing
+convenience feature so much as a second front on the same problem this whole session has
+been fighting: speech recognition mishearing a place name. A pasted link sidesteps that
+class of failure entirely for the user who has an exact address in hand -- it is not a
+guess normalised with best effort, it is the actual point.
+
+**Deliberately kept out of the extractor/LLM entirely.** Parsing a URL is not a
+language-understanding problem -- it is exactly the kind of structured, deterministic
+input this project's own thesis says should never go near the LLM (docs/architecture.md's
+"Thesis"; now also its own new row in "When the LLM is NOT called"). `services/maps.py`
+resolves a link to coordinates with three regex shapes covering how Google actually embeds
+them (`@lat,lng,zoom` on a place link's map centre; `?q=lat,lng` on a bare coordinate
+query; `!3d{lat}!4d{lng}` in a place link's embedded data blob), following a shortened
+link's redirect first (`goo.gl` / `maps.app.goo.gl`) since those carry no coordinates of
+their own. No reverse geocoding to a human-readable address on purpose -- that would need
+a second external service (Nominatim, or a paid Google API) with its own rate limits and
+failure modes, for a "nicer to read" value on top of coordinates that are already exact and
+already fully usable by a driver; a real extension point later, not attempted here.
+
+**Reuses the field it already has, not a new one.** The resolved `"{lat:.5f}, {lng:.5f}"`
+string is written straight to the existing `pickup.locality` / `drop.locality` `Field[str]`
+-- no schema change. This means every piece of machinery already built around that field
+(the CONFIRMED-guard, revision history on a correction, completeness/policy asking about
+floor next, the confirmation modal, the review card, the spoken summary) works on a pinned
+location with zero new code, and -- because the patch's `evidence` is the pasted URL itself
+-- `reducer._write_locality_raw_text` fires exactly as it would for a spoken locality,
+so the same "(heard as ...)" transparency rendering (`templates.py`/`format.ts`) shows the
+source link right next to the coordinates for free.
+
+**`POST /session/{id}/location` mirrors `/turn`'s own contract on purpose.** Same
+`TurnResponse` shape back, built the same way `_process_turn`'s fast-path branch already
+builds one from a deterministic, hand-constructed `ExtractionResult` fed through
+`orchestrator.finish_turn` -- a dropped pin advances the conversation exactly like any
+other provided field would (the next question, review, or completion), not a special case
+bolted on beside the normal turn machinery. `_process_turn`'s own "update session, speak
+the response" tail was factored out into `_advance_session` so this endpoint and `/turn`
+cannot drift on that bookkeeping. On the frontend, `submitLocationLink` returns the
+identical shape `postTurn` does, so `App.tsx` applies the result through the exact same
+`applyTurn`/`playResponse` pair a voice turn uses -- `ReviewCard`/`ConfirmationModal`
+support it automatically, with no new frontend state-handling code.
+
+**New UI: a small, deliberately secondary "paste a map link" toggle** next to the From/To
+rows only (`LocationLinkInput.tsx`) -- voice stays the primary way to answer; this is an
+opt-in escape hatch for the one thing speech cannot do reliably, not a replacement path
+users are pushed toward.
+
+**Verified live in the running app, not just unit-tested.** `services/maps.py`'s regex
+extraction and short-link redirect-following are covered by `test_maps.py` (11 cases,
+`httpx.MockTransport` for the redirect hop rather than a real `goo.gl` link, which would
+only add flakiness as it inevitably rots -- there is no real vendor contract to verify here
+the way Cartesia/Groq's actual behaviour needed a real `_live.py` file). The endpoint's
+FastAPI wiring is covered by `test_api_location.py` (5 cases: pickup, drop, an unparseable
+link, session-not-found, and a second link for an already-set field producing a real
+`op: correct` with a revision recorded). Beyond that, pasted a real Koramangala Maps URL
+into the actually-running app in a real browser: the FROM row updated to
+`12.93520, 77.61460 (heard as "https://www.google.com/maps/place/...")`, the progress
+counter incremented, and the agent's spoken reply -- "Got it — picking up from 12.93520,
+77.61460. Where should we drop this off?" -- proved the phase machine genuinely advanced
+to asking for the drop point next, with zero LLM calls and zero backend errors.
+
+---
+
+## Phase 3.8 — STT connection failures were reported as "you mumbled"
+
+**User-reported log**: `services/stt.py` exhausted its retry budget against
+`groq.APIConnectionError` (a genuine network-layer failure reaching Groq's STT endpoint --
+the SDK's own internal retries, visible in the pasted log, had already failed twice before
+this project's own retry loop ran at all). This is an environmental/network condition, not
+a bug I can fix from here directly -- but two real things in the code's own handling of it
+were worth fixing regardless of root cause:
+
+1. **The reprompt was misleading.** `_process_turn` treated a failed STT *call* identically
+   to a successful call that came back as noise/silence -- both produced "Sorry, I didn't
+   catch that," which reads as "you mumbled" for a failure that had nothing to do with what
+   the user said. Split into a distinct `_connection_failure_reprompt` ("Sorry, I'm having
+   trouble connecting right now -- could you try again?"), gated on `stt.transcribe()`
+   actually returning `None` (its documented "retry budget exhausted" contract) --
+   deliberately not on the sibling `BadRequestError` branch just above it, which means the
+   *audio itself* was unusable (a muted mic, confirmed live in an earlier session) and
+   "didn't catch that" is still the honest message for that case.
+2. **The retry loop had no backoff for a connection error, only for a rate limit.** Two
+   attempts fired back-to-back with zero gap -- no better odds against a brief network blip
+   than the attempt that had just failed, especially given the Groq SDK's own internal
+   retries (visible in the reported log) had already spent some time failing before ever
+   raising up to this loop. Added a fixed 0.5s pause between attempts for
+   `_RETRIABLE_ERRORS` specifically (not rate limits, which already wait out the API's own
+   Retry-After), and widened the budget from one retry to two -- three attempts total, each
+   now separated by a real pause instead of an instant re-try.
+
+Both are provable, deterministic improvements verified by tests (`test_stt.py`'s new
+backoff-timing test genuinely measures elapsed wall-clock time against two real 0.5s
+sleeps, not a mock; `test_process_turn.py`'s new test drives a real
+`groq.APIConnectionError` through the real retry loop and checks the distinct message).
+Neither claims to fix the actual network condition that produced the original log --
+that lives outside this codebase, on whatever machine is running the backend at the time.
+
+---
+
+## Phase 3.9 — Map-pin locations: reverse geocoding, and dropping the wrong transparency
+
+**User report, with a real screenshot**: pinning a location showed
+`10.00824, 76.33026 (was: Keraja) (heard as "https://maps.app.goo.gl/...")` -- raw
+coordinates, plus both transparency annotations cluttering what should have been the
+single most exact, least-ambiguous answer a user can give. Direct ask: the real place
+name, no "heard as", no "was".
+
+**Reverse geocoding, deliberately deferred at the end of Phase 3.7, built now that the
+trade-off actually mattered to the person building this.** `services/maps.py` gained
+`reverse_geocode()` against Nominatim (OpenStreetMap's free geocoding service -- no key,
+matching every other vendor choice here), tried with a small ordered field-preference list
+(`suburb` > `neighbourhood` > `quarter` > `village` > `town` > `city`) so a pin reads at
+the same neighbourhood-level granularity this app's existing localities already do
+("Koramangala", not a full postal address), rather than Nominatim's verbose
+`display_name`. Best-effort throughout: any failure (network, no address data for a
+point) falls back to plain coordinates, never blocks the turn. **Verified live against
+the real service, not just mocked**: Koramangala's coordinates resolved to "Kormangala
+West, Bengaluru", a real Kottayam city-centre point to "Nagampadam, Kottayam" -- genuine,
+sensible neighbourhood names, not a guess.
+
+**Both transparency annotations turned out to be actively wrong for this specific field,
+not just visually busy.** `evidence` exists so a corrected value can show what speech it
+was normalised from -- genuinely useful when a human can eyeball "was it 'Koramangala' or
+'Koro Mengala'?" (Rule 10). A pasted URL has nothing comparable to show: "Kottayam (heard
+as 'https://maps.app.goo.gl/3X9Z7mrFeYMvKNzb9')" conveys zero verification value, it only
+clutters an answer that is already exact. Fixed by simply not setting `evidence` on a
+map-link patch at all -- `reducer._write_locality_raw_text` only ever fires when a patch
+carries evidence, so `raw_text` correctly never populates, and the existing "(heard as
+...)" rendering (`summary.py`, `format.ts`'s `withHeardAs`) is untouched for the case it
+actually serves well: a genuine spoken mishearing. Zero risk of regressing that feature,
+because this is strictly an omission on the *new* code path, not a change to the
+mishearing-transparency mechanism itself.
+
+The "(was: ...)" revision text was a separate fix: `Field.revisions` is populated by
+`op: correct` regardless of the new patch's evidence, so dropping `evidence` alone would
+not have removed it, and the correction still needs to go through `op: correct` (not
+`op: set`) to respect the CONFIRMED-guard and let a pin resolve a pending conflict
+correctly -- the fix could not live in the reducer without giving up real correctness
+there. Handled as a presentation-layer choice instead: `App.tsx`'s live panel and
+`bookingSections.ts` (shared by ReviewCard and ConfirmationModal) now read
+`address.locality.value` directly for the locality row specifically, instead of the
+revision-aware `displayValue`/`displayValueOrNull` every other field still uses. The
+underlying `Revision` is still recorded in state either way -- this is a display choice,
+not data loss -- and the reasoning for why locality specifically doesn't need to show it
+applies whether the old value came from a spoken hallucination or an earlier map pin: a
+now-exact, geocoded answer has nothing to hedge against a discarded guess.
+
+`test_maps.py` gained 6 new cases for `reverse_geocode` (field-priority fallback, the
+same-name-as-city suppression, network/malformed-response failure) using
+`httpx.MockTransport` for the same reason the redirect-following tests do -- no real
+vendor contract to pin a test to, Nominatim's actual behaviour was what needed a live
+check, not a specific response shape. `test_api_location.py`'s existing cases were
+updated to expect a geocoded name instead of raw coordinates and gained two more:
+confirming `raw_text` stays empty on a map-link patch, and confirming the
+plain-coordinate fallback when geocoding finds nothing. Full 426-test suite green.
+
 ---
 
 ## Phase 4 — Deployment and resilience (Day 4)
