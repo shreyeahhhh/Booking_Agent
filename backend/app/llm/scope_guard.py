@@ -23,23 +23,28 @@ reply`). Two reasons:
    talkative user than a call whose *entire* system prompt is this one
    decision. A dedicated classifier is a narrower target.
 
-Fails closed, not open, for every *retriable* failure (a connection error,
+Fails open, not closed, for every *retriable* failure (a connection error,
 an unworkable rate limit, a response that does not parse or does not match
-the schema): `classify()` returns the same shape a confident "reject"
-would (`allowed=False`) rather than letting an unverifiable request
-through to the main LLM on the theory that "we don't know, so let the
-bigger model sort it out" -- that would defeat the actual purpose of a
-cheap guardrail. This is a deliberate, narrow exception to this codebase's
-general "fail to a safe default that still tries to help" pattern
-(llm/extractor.py's own retry exhaustion still produces a usable, if
-generic, response) -- here, failing to full service is exactly the point:
-a scope guardrail that quietly stands down under load is not a guardrail.
+the schema): `classify()` returns `allowed=True` rather than blocking the
+turn on a guardrail that could not even complete its own call. This was
+originally fail-closed -- the reasoning being that letting an unverifiable
+request through "because the bigger model can sort it out" defeats the
+point of a cheap guardrail -- but live use surfaced the real cost of that:
+this guard runs on its own smaller model with its own separate quota, and
+whenever that quota (or just a transient connection issue) made this call
+fail, *every* turn showed the fixed redirect until it cleared, regardless
+of what was actually said -- an observed "stuck on the same reply no
+matter what I say" failure, not a hypothetical one. Fails open now that
+the main extractor's own prompt carries a second, independent line of
+defence for exactly this case (extractor.md's boundary statement, Rule 9's
+off_topic handling) -- so a guard outage degrades to that second layer
+rather than to a broken conversation.
 
-An auth/permission failure is the one exception to "fails closed": it
-propagates uncaught, the same deliberate choice llm/extractor.py already
-makes for the identical reason -- an invalid or revoked API key is a
-deployment problem worth surfacing loudly, not a per-turn condition to
-paper over as a confident rejection.
+An auth/permission failure is still the one exception that propagates
+uncaught rather than failing open or closed: the same deliberate choice
+llm/extractor.py already makes for the identical reason -- an invalid or
+revoked API key is a deployment problem worth surfacing loudly, not a
+per-turn condition to paper over silently either way.
 """
 
 from __future__ import annotations
@@ -103,10 +108,18 @@ class ScopeDecision(BaseModel):
     intent: ScopeIntent
 
 
-# A confident, closed default: on any failure, this is indistinguishable
-# from the model itself saying "no". See the module docstring's "fails
-# closed, not open".
-_FAIL_CLOSED = ScopeDecision(allowed=False, intent=ScopeIntent.UNRELATED)
+# Fails OPEN, not closed: on any failure to even complete this call, let
+# the turn through to the main extractor rather than blocking it. Reversed
+# from an earlier fail-closed design after live use showed the actual
+# cost: this guard runs on a separate, smaller model with its own quota,
+# and a transient hiccup there (or that quota running out) made *every*
+# turn show the fixed redirect until it cleared -- a real, observed "stuck
+# on the same reply, no matter what I say" failure, not a hypothetical
+# one. The main extractor's own prompt was hardened specifically as a
+# second line of defence for exactly this case (extractor.md's boundary
+# statement, Rule 9's off_topic handling), so failing open here no longer
+# means no protection at all, just falling back to that second layer.
+_FAIL_OPEN = ScopeDecision(allowed=True, intent=ScopeIntent.CLARIFICATION)
 
 _RESPONSE_FORMAT = to_groq_response_format(ScopeDecision, name="scope_decision")
 
@@ -160,8 +173,8 @@ of the values above>}. No other text.
 
 async def classify(client: AsyncGroq, *, model: str, utterance: str) -> ScopeDecision:
     """Never raises for a retriable failure -- see module docstring for why
-    that means `_FAIL_CLOSED`, not a generic fallback. An auth/permission
-    error is the one deliberate exception: it propagates."""
+    that means `_FAIL_OPEN`, not a block. An auth/permission error is the
+    one deliberate exception: it propagates."""
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": utterance},
@@ -182,7 +195,7 @@ async def classify(client: AsyncGroq, *, model: str, utterance: str) -> ScopeDec
             wait = retry_after_seconds(err.response)
             if wait is None:
                 log.warning("scope guard rate-limited, no short retry-after: %s", err)
-                return _FAIL_CLOSED
+                return _FAIL_OPEN
             log.warning("scope guard rate-limited, retrying in %.2fs: %s", wait, err)
             await asyncio.sleep(wait)
             continue
@@ -195,7 +208,7 @@ async def classify(client: AsyncGroq, *, model: str, utterance: str) -> ScopeDec
             return ScopeDecision.model_validate(json.loads(content))
         except (json.JSONDecodeError, ValueError) as err:
             log.warning("scope guard returned unparseable content: %s", err)
-            return _FAIL_CLOSED
+            return _FAIL_OPEN
 
-    log.warning("scope guard retry budget exhausted -- failing closed")
-    return _FAIL_CLOSED
+    log.warning("scope guard retry budget exhausted -- failing open")
+    return _FAIL_OPEN

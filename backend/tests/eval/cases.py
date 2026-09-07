@@ -139,8 +139,10 @@ CASES: list[EvalCase] = [
     ),
     EvalCase(
         "landmark_mentioned",
-        "It's near the Infopark in Kakkanad.",
+        "It's near the Infopark.",
         [ExpectedPatch("pickup.landmark", "set", None)],
+        last_question="Is there a landmark near the pickup?",
+        setup=[ExpectedPatch("pickup.locality", "set", "Kakkanad")],
     ),
     EvalCase(
         "booking_type_explicit",

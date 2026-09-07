@@ -31,7 +31,9 @@ SPECIAL FIELDS (not in the table above)
   Item names are exactly as prone to mishearing as the place names Rule 10
   describes: speech recognition can turn a real household or commercial item
   into a similar-sounding wrong word ("fridge" heard as "bridge", "geyser"
-  heard as "geezer", "almirah" heard as "alimony"). If you can tell which
+  heard as "geezer", "almirah" heard as "alimony", "cot" heard as "court" --
+  "bed cot", a folding bed/cot common in Indian households, misheard as "bed
+  court"). If you can tell which
   specific real item was clearly meant, set "name" to the correct item while
   keeping "evidence" as the exact phrase heard -- the same normalisation as
   Rule 10, not a guess. If the transcribed word does not plausibly name any

@@ -1496,6 +1496,56 @@ appearing for a non-locality ambiguity. Full non-live suite green.
 
 ---
 
+## Phase 3.12 — Three real bugs, reported live from the deployed instance after the key swap
+
+Three separate, unrelated live reports arrived together after the Groq key was swapped to
+a fresh account and the guard/extractor were exercised for real on the deployed URL. Each
+traced to a genuinely different layer, not one root cause wearing three faces.
+
+**1. "If I say anything related to the booking, it's stuck on the same redirect message" --
+the scope guard's own "fails closed" design (phase 3.10), now seen to cost more in
+practice than it protects.** Re-tested the guard fresh with realistic booking phrases
+matching the report exactly ("I need to move a bed and a court from Ernakulam to Kassar
+Gold.", "A Tata Ace should work.", "Yes, that sounds right.") -- all seven classified
+correctly as allowed. The guard's own judgement was never the problem; the problem is what
+fail-closed does when the guard's *call itself* cannot complete (its own quota running
+out, exactly the kind of transient condition this session has hit repeatedly on the main
+model, or any connection hiccup): every turn shows the fixed redirect regardless of what
+was actually said, until it clears -- a real "stuck no matter what I say" failure, not a
+hypothetical one anymore. Reversed to fail *open*: `llm/scope_guard.py`'s `classify()` now
+returns `allowed=True` for every retriable failure (`_FAIL_OPEN`, renamed from
+`_FAIL_CLOSED`) rather than blocking the turn, since `extractor.md`'s own hardened
+boundary statement and Rule 9 (phase 3.10's defence-in-depth) mean a guard outage degrades
+to that second layer instead of to a broken conversation. The auth/permission-propagates
+exception is unchanged. Six tests in `test_scope_guard.py` and one integration test in
+`test_process_turn.py` flipped to match, the latter rewritten to prove the positive case
+end to end (a guard failure now reaches a still-working extractor) rather than only the
+old negative one.
+
+**2. "STUFF: 2 bed court, clothes" -- "whats a bed court????"** Reproduced directly: "2 bed
+cots, clothes." extracts as `{"name": "bed cot", "quantity": 2}` verbatim, unnormalised --
+"bed cot" (a folding bed/cot combination common in Indian households) is a real term this
+project's mishearing guidance never explicitly named, so nothing told the model "court" in
+this context is a plausible mishearing of "cot" the way "bridge"/"fridge" or
+"geezer"/"geyser" already are. Added as a fourth named example in `extractor.md`'s items
+guidance; re-verified live, both the original phrasing and the literal mangled "bed
+courts" now normalise to `cot` with the heard phrase kept as evidence. Locked into
+`test_extractor_mishearing_live.py`.
+
+**3. "Make the listening span a bit more longer."** `useRecorder.ts`'s VAD auto-stops on
+700ms of quiet after speech starts -- exactly the risk register's own "VAD cuts the user
+off mid-sentence" row, which had been marked confirmed-live for the *amplitude*-calibration
+half of that risk (phase 3.5's adaptive-floor fix) but explicitly noted as "still needs
+real-microphone confirmation" for the *timing* half. That confirmation arrived: a
+thoughtful pause between clauses ("I need to move a sofa... and two cupboards") is
+routinely longer than 700ms and was cutting real users off. Raised to 1100ms, with
+`MAX_RECORDING_MS` raised from 20s to 30s alongside it so the more generous pause
+tolerance still leaves room for a genuinely long utterance to finish. No frontend test
+suite exists to update (this project has none -- correctness here is `tsc`/`vite build`
+plus manual verification); both still pass clean.
+
+---
+
 ## Phase 4 — Deployment and resilience (Day 4)
 
 **Deploy first thing in the morning, before any polish.**

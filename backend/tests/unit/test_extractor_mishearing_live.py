@@ -87,6 +87,19 @@ async def test_mangled_item_name_is_normalised_with_evidence_kept():
     assert "cot" in names  # the genuinely correct item alongside it is untouched
 
 
+async def test_bed_cot_misheard_as_bed_court_is_normalised():
+    """Live-reported: "2 bed court, clothes" showed up in a real booking --
+    a real user saying "bed cot" (a folding bed/cot common in Indian
+    households), misheard by STT as "bed court". Before this case was
+    added as an explicit prompt example, the extractor passed "bed court"
+    through unchanged as if it were a real, if unusual, item name."""
+    result = await _extract("Two bed cots and some clothes.", last_question="What are you sending?")
+    state = apply(BookingState(), result.patches).state
+    names = {item.name.lower() for item in state.goods.items}
+    assert "cot" in names, f"expected 'bed cot'/'bed court' normalised to 'cot', got items {names}"
+    assert not any("court" in n for n in names), f"'court' leaked through as an item name: {names}"
+
+
 async def test_nonsense_item_fragment_is_not_force_matched():
     """"splendorak" names nothing real and is not a recognisable mishearing
     of anything -- goods.items has no ambiguity plumbing (Item is a list

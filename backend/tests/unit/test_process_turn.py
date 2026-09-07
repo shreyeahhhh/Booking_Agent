@@ -313,22 +313,33 @@ async def test_an_off_topic_utterance_gets_the_fixed_redirect_with_no_llm_call(s
     assert outcome.session is session  # no state change -- the pending question survives
 
 
-async def test_a_scope_guard_failure_also_produces_the_fixed_redirect(settings):
-    """The guard's own "fails closed" contract (llm/scope_guard.py), proven
-    end to end: a malformed classifier response must reject the turn the
-    same way a confident "unrelated" verdict does, not fall through to the
-    extractor just because the guard itself could not be reached."""
+async def test_a_scope_guard_failure_falls_through_to_the_extractor(settings):
+    """llm/scope_guard.py's "fails open" contract (reversed from an earlier
+    fail-closed design after live use showed it otherwise blocks *every*
+    turn with the fixed redirect whenever the guard's own call fails, no
+    matter what was actually said), proven end to end: a malformed
+    classifier response must NOT reject the turn -- it falls through to
+    the extractor exactly as if the guard had said "allowed", which in
+    this test succeeds normally."""
     client = _mock_client(stt_text="anything", llm_content=_VALID_LOCALITY_RESPONSE)
-    client.chat.completions.create = AsyncMock(
-        return_value=AsyncMock(choices=[AsyncMock(message=AsyncMock(content="not json{{{"))])
-    )
+    real_create = client.chat.completions.create
+
+    async def chat_create(**kwargs):
+        if kwargs.get("model") == _SCOPE_GUARD_MODEL:
+            response = AsyncMock()
+            response.choices = [AsyncMock(message=AsyncMock(content="not json{{{"))]
+            return response
+        return await real_create(**kwargs)
+
+    client.chat.completions.create = chat_create
     cartesia_client = _mock_cartesia_client()
     decision = SlotDecision("pickup.locality", "pickup location", SlotReason.MISSING)
     session = _session(last_question="Where are you moving from?", decision=decision)
     outcome = await _process_turn(
         client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
     )
-    assert outcome.agent_text == "I can help with your delivery booking. What would you like to do?"
+    assert outcome.agent_text != "I can help with your delivery booking. What would you like to do?"
+    assert get_field(outcome.session.conversation.booking, "pickup.locality").value == "Koramangala"
 
 
 # --- TTS unavailable: agent_text still returned, audio_chunks is None ------
