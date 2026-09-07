@@ -1,30 +1,62 @@
-# Porter-style Voice Booking Agent
+# Relay
 
-A voice agent that holds a natural conversation to gather intra-city moving and
-transportation requirements, asks only for what it is actually missing, handles
-corrections and ambiguity, and produces a structured booking summary for the user
-to review and confirm.
+**Book a delivery or moving truck by talking — no app, no forms, no menus.**
 
-> **Status: in development.** The deterministic core (Phase 1), the text conversation loop
-> (Phase 2), the full voice backend and UI including live correction history (Phase 3),
-> and deployment resilience — rate-limit backoff, a session TTL sweep, a cold-start UI
-> state, and a verified single-service `Dockerfile` (Phase 4) — are built. Still open:
-> actually deploying to a live host (the image is ready; picking and clicking through a
-> specific one is the remaining step) and Phase 5's evaluation harness. See
-> [`MASTER_PLAN.md`](MASTER_PLAN.md) for the exact state of every step.
+Relay is a voice assistant for booking intra-city moving and delivery jobs, in the
+style of services like Porter. You describe your move the way you'd describe it to a
+person on the phone. Relay only asks about whatever you haven't already told it, catches
+and fixes misunderstandings, and reads the whole booking back to you before anything is
+confirmed.
 
-## The idea in one sentence
+### 🔗 [Try Relay live](https://porter-booking-agent.onrender.com/)
+
+Built as a one-week take-home technical assessment.
+
+---
+
+## What Relay does
+
+- **You talk, it listens.** Tap the mic and describe your move naturally — *"I need to
+  move a sofa and a fridge from Koramangala to Whitefield tomorrow evening."*
+- **It only asks what's still missing.** If you already said the pickup floor, Relay
+  won't ask again. Nothing gets asked twice.
+- **It asks instead of guessing.** If something you say is unclear, Relay asks a
+  follow-up rather than assuming — a booking is never filled in with a guess.
+- **You can change your mind mid-conversation.** *"Actually, make it Saturday"* is
+  understood as a correction to what you already said, not a brand-new detail.
+- **Not sure of the exact address?** Paste a Google Maps link instead of saying it out
+  loud, and Relay uses that exact pinned location.
+- **It reads everything back before booking.** A clear on-screen summary shows exactly
+  what Relay understood, so nothing is confirmed by accident.
+- **It stays on topic.** Relay only helps with the booking in front of it — it won't
+  solve a maths problem, write code, or wander off into small talk unrelated to the job.
+
+## How it works, in one paragraph
+
+Relay splits the work in two. An AI model only ever *understands what you said* — it
+turns your sentence into a list of facts ("pickup: Koramangala", "item: sofa"). A
+separate, plain, predictable set of rules — ordinary code, not AI — decides what those
+facts mean, what's still missing, what to ask next, and when the booking is complete.
+That split is deliberate: it means Relay can't invent a detail you never said, can't
+forget something you mentioned three turns ago, and can't quietly decide on its own that
+a booking is finished. Every part of the actual booking record is something you
+genuinely said.
+
+Curious how that's actually built? The rest of this document, and
+[`docs/architecture.md`](docs/architecture.md), cover the engineering in full.
+
+---
+
+## For developers
+
+### The idea in one sentence
 
 **The LLM is a sensor, not a controller.** It converts a single utterance into proposed,
 evidence-backed changes to a typed booking state. Validation, state ownership,
 completeness checking, question selection, flow control and the final summary are all
-deterministic application code.
+deterministic application code — never the model.
 
-The consequence: the agent cannot hallucinate a booking detail into the record, cannot
-forget something it was told, cannot ask the same question twice, and cannot decide on
-its own that the booking is finished.
-
-## Why this design
+### Why this design
 
 A voice booking agent is a slot-filling problem wearing a conversational costume. The
 tempting approach — replay the whole transcript to a model each turn and ask for JSON —
@@ -44,29 +76,30 @@ messy human language) and nothing else:
 | | Final confirmation and summary |
 | | Conversation flow and state transitions |
 
-This also makes the agent cheap and fast: **at most one LLM call per turn, frequently
-zero**, and every user-facing sentence comes from a template whose audio is cached.
+This also makes Relay cheap and fast: **at most two LLM calls per turn (a small scope
+check, then extraction), frequently zero**, and every user-facing sentence comes from a
+template whose audio is cached.
 
 Full detail in [`docs/architecture.md`](docs/architecture.md).
 
-## Tech stack
+### Tech stack
 
 | Layer | Choice |
 |---|---|
 | Frontend | React + TypeScript + Vite |
 | Voice capture | `MediaRecorder` + `AnalyserNode` silence detection |
 | Speech-to-text | Groq `whisper-large-v3-turbo` |
-| LLM | Groq `openai/gpt-oss-120b` (strict structured outputs) |
+| LLM (extraction + scope guard) | Groq `openai/gpt-oss-120b` / `gpt-oss-20b` (strict structured outputs) |
 | Text-to-speech | Cartesia `sonic-latest`, with a pre-synthesised cache |
 | Backend | FastAPI + Pydantic v2 |
 | State | In-memory session store behind a swappable interface |
-| Hosting | Single service — FastAPI serves the built frontend bundle |
+| Hosting | Single service on Render — FastAPI serves the built frontend bundle |
 
 Two vendors, two keys (Groq for STT + the LLM, Cartesia for TTS — see
 MASTER_PLAN.md for why TTS moved off Groq's own Orpheus), both **held
 server-side only**. No credential ever reaches the browser.
 
-## Repository layout
+### Repository layout
 
 ```
 backend/
@@ -74,8 +107,8 @@ backend/
     domain/         deterministic core - state, reducer, completeness, policy
                     (must not import from llm/ or services/)
     conversation/   state machine, response templates, fast-path classifier
-    llm/            Groq extractor + prompt + structured output schema
-    services/       STT and TTS clients
+    llm/            Groq extractor + scope guard + prompts + structured output schema
+    services/       STT, TTS and map-link clients
     session/        in-memory session store
     api/            FastAPI routes
   tests/
@@ -91,7 +124,7 @@ docs/
 MASTER_PLAN.md      phase-by-phase build order
 ```
 
-## Documentation
+### Documentation
 
 | Document | Contents |
 |---|---|
@@ -100,7 +133,7 @@ MASTER_PLAN.md      phase-by-phase build order
 | [`docs/design.md`](docs/design.md) | Booking schema, requirement classes, LLM contract and prompt, conversation design |
 | [`docs/test-plan.md`](docs/test-plan.md) | Four test layers and the full conversation scenario matrix |
 
-## Setup
+### Setup
 
 Requires **Python 3.11+** and **Node 20+**.
 
@@ -126,15 +159,16 @@ cd frontend
 npm install
 ```
 
-## Environment variables
+### Environment variables
 
 All configuration lives in [`.env.example`](.env.example) — copy it to `.env` and edit.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GROQ_API_KEY` | **Yes** | — | Speech-to-text and the LLM. Get one at [console.groq.com/keys](https://console.groq.com/keys). |
+| `GROQ_API_KEY` | **Yes** | — | Speech-to-text, extraction and the scope guard. Get one at [console.groq.com/keys](https://console.groq.com/keys). |
 | `CARTESIA_API_KEY` | **Yes** | — | Text-to-speech. Get one (free, no card) at [play.cartesia.ai/keys](https://play.cartesia.ai/keys). Missing this degrades to the browser's own `speechSynthesis` rather than failing the turn. |
 | `GROQ_LLM_MODEL` | No | `openai/gpt-oss-120b` | Extraction model |
+| `SCOPE_GUARD_MODEL` | No | `openai/gpt-oss-20b` | Keeps Relay from answering anything unrelated to the booking — a separate, cheaper model on its own quota |
 | `GROQ_STT_MODEL` | No | `whisper-large-v3-turbo` | Speech-to-text |
 | `CARTESIA_TTS_MODEL` | No | `sonic-latest` | Text-to-speech |
 | `CARTESIA_TTS_VOICE_ID` | No | `db6b0ed5-d5d3-463d-ae85-518a07d3c2b4` ("Skylar") | Cartesia voice |
@@ -144,13 +178,13 @@ All configuration lives in [`.env.example`](.env.example) — copy it to `.env` 
 Both keys are read server-side only. The browser never calls a vendor API, so no
 credential is ever shipped to the client.
 
-The app **starts without either key** — the deterministic core and its test suite run
+Relay **starts without either key** — the deterministic core and its test suite run
 with no network access at all, and a missing `CARTESIA_API_KEY` specifically degrades to
 the browser's own speech synthesis rather than blocking anything. `/api/health` reports
 whether each key is configured (`llm_configured`, `tts_configured`), without revealing
 either one.
 
-## Running locally
+### Running locally
 
 Two terminals:
 
@@ -174,7 +208,7 @@ cd frontend && npm run build
 cd ../backend && .venv/Scripts/python -m uvicorn app.main:app --port 8000
 ```
 
-## Tests
+### Tests
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest
@@ -188,7 +222,7 @@ cd backend && .venv/Scripts/python -m ruff check .
 cd frontend && npm run typecheck
 ```
 
-## Deployment
+### Deployment
 
 **Live URL:** [porter-booking-agent.onrender.com](https://porter-booking-agent.onrender.com/)
 — deployed on Render, built from the `Dockerfile` at the repo root. Verified live, not
@@ -225,16 +259,14 @@ Whichever host is chosen:
    access — `getUserMedia` requires HTTPS everywhere except `localhost`, so this is
    the first point this can be genuinely tested at all.
 
-Not yet done: microphone access on the deployed HTTPS origin (`getUserMedia` cannot be
-tested from this sandboxed environment, only by a real browser — this needs a personal
-pass on the live URL above). Cold-start behaviour (Render's free tier spins down after
-15 minutes idle) has a UI state for it (`isSlowStart` in `App.tsx`) but has not yet been
-directly observed against a real cold instance — the one live check made so far returned
-in ~1.1s, meaning the instance was already warm at the time, not proof either way. Session
-TTL sweeping (`SESSION_TTL_SECONDS`) is implemented but likewise only exercised by its
-unit tests so far, not a real multi-day-idle deployment.
+Not yet done: microphone access on the deployed HTTPS origin has not been personally
+verified in a fresh browser profile yet. Cold-start behaviour (Render's free tier spins
+down after 15 minutes idle) has a UI state for it (`isSlowStart` in `App.tsx`) but has
+not yet been directly observed against a real cold instance. Session TTL sweeping
+(`SESSION_TTL_SECONDS`) is implemented but likewise only exercised by its unit tests so
+far, not a real multi-day-idle deployment.
 
-## Assumptions and limitations
+### Assumptions and limitations
 
 Tracked as they are made rather than reconstructed at the end.
 
@@ -244,26 +276,24 @@ Tracked as they are made rather than reconstructed at the end.
   a speech-recognition accuracy problem, not a conversation-design one, and would add
   failure modes while demonstrating nothing the brief tests.
 - **Geocoding is opt-in, not automatic.** A spoken locality is still captured as plain
-  text with no validation that the place exists — but the user can paste a Google Maps
-  link for an exact pickup/drop point instead (`POST /session/{id}/location`), which
-  resolves to real coordinates and, where available, a reverse-geocoded name
-  (`services/maps.py`, via Nominatim/OpenStreetMap). Voice input alone still has no
-  geocoding behind it.
+  text with no validation that the place exists — but you can paste a Google Maps link
+  for an exact pickup/drop point instead, which resolves to real coordinates and, where
+  available, a reverse-geocoded name (via Nominatim/OpenStreetMap). Voice input alone
+  still has no geocoding behind it.
 - **Browser: built and tested against Chrome.** `MediaRecorder`/`getUserMedia` support
-  and behaviour differs across browsers; this project targets Chrome specifically and has
-  not been verified on Firefox or Safari. A fresh-profile mic-permission check on the
-  live deployed URL (as opposed to local dev) is still outstanding -- see the Deployment
-  section above.
+  and behaviour differs across browsers; Relay targets Chrome specifically and has not
+  been verified on Firefox or Safari. A fresh-profile mic-permission check on the live
+  deployed URL is still outstanding — see Deployment above.
 - **No pricing.** Producing a fare would require a rate card this project does not have.
 - **Sessions are in-memory.** A server restart loses in-flight conversations. This is a
   deliberate trade for a single-session demo; the store sits behind an interface that a
   database could implement.
 - **English only.**
 
-## Future improvements
+### Future improvements
 
 - Streaming STT with partial transcripts, for barge-in and lower perceived latency
 - Locality validation against a real place database, to replace the heuristic
   city-versus-locality ambiguity check
 - Persistent sessions and a booking history
-- Multilingual support, which matters for the actual Indian market this models
+- Multilingual support, which matters for the actual Indian market Relay models
