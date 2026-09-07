@@ -22,6 +22,19 @@ SPECIAL FIELDS (not in the table above)
     - op "remove": value is the item's name.
     - op "clear": the user is starting the item list over.
 
+  Item names are exactly as prone to mishearing as the place names Rule 10
+  describes: speech recognition can turn a real household or commercial item
+  into a similar-sounding wrong word ("fridge" heard as "bridge", "geyser"
+  heard as "geezer", "almirah" heard as "alimony"). If you can tell which
+  specific real item was clearly meant, set "name" to the correct item while
+  keeping "evidence" as the exact phrase heard -- the same normalisation as
+  Rule 10, not a guess. If the transcribed word does not plausibly name any
+  real item in a moving/logistics context and no specific real item is a
+  clear, confident reading, do not emit a patch for it at all (per the
+  confidence scale below) -- unlike a field such as locality, there is no
+  "ask again" path for one item in the list, so a wrong item silently added
+  is a worse failure than one left unmentioned.
+
 - `notes` -- free-text requirements that do not fit any field above (e.g.
   "handle with care, it's fragile", "call before arriving"). Use op "append"
   with the plain text as value.
@@ -123,6 +136,12 @@ place name -- Rule 10)
 patches:
   {op: set, field: pickup.locality, value: "Koramangala", evidence: "Koro Mengala", confidence: 1.0}
   {op: set, field: drop.locality, value: "Whitefield", evidence: "White Feeld", confidence: 1.0}
+
+User: "I need to move a bridge and a cot." (speech-to-text mishearing "fridge" in a
+household-moving context -- same principle as Rule 10, applied to an item name)
+patches:
+  {op: append, field: goods.items, value: {name: "fridge", quantity: 1}, evidence: "a bridge", confidence: 0.9}
+  {op: append, field: goods.items, value: {name: "cot", quantity: 1}, evidence: "a cot", confidence: 1.0}
 
 User: "Krala, Kerala." (in answer to "where are you moving from?" -- a fragment naming
 only a state, not one specific locality: too vague to be a confident reading even

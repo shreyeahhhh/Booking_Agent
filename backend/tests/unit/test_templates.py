@@ -87,6 +87,25 @@ def test_format_item_list_joins_naturally():
     )
 
 
+def test_format_item_hides_evidence_that_just_wraps_the_name():
+    """evidence naturally quotes surrounding words ("a sofa" for "sofa") --
+    that is not a mis-transcription and must not be flagged as one on every
+    single item, mirroring test_summary's identical locality case."""
+    from app.domain.state import Item
+
+    assert format_item(Item(name="sofa", quantity=1, evidence="a sofa")) == "a sofa"
+
+
+def test_format_item_shows_evidence_that_diverges_from_the_name():
+    """The actual point of Item.evidence: STT mangles an item name (Rule 10's
+    principle, applied to goods.items in extractor.md), and the mismatch must
+    stay visible rather than being silently overwritten."""
+    from app.domain.state import Item
+
+    item = Item(name="fridge", quantity=1, evidence="a bridge")
+    assert format_item(item) == 'a fridge (heard as "a bridge")'
+
+
 # --- acknowledgment: what counts as "landed" ----------------------------
 
 

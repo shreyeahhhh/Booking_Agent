@@ -106,10 +106,19 @@ def format_vehicle(vehicle: VehicleType) -> str:
     return _VEHICLE_NAMES[vehicle]
 
 
+def _mentions(raw_text: str, value: str) -> bool:
+    """Mirrors conversation.summary's `_mentions_locality` -- same substring
+    check, applied to item names instead of localities: evidence naturally
+    wraps the name in surrounding words ("a sofa" for "sofa"), which is not
+    a mis-transcription and must not be flagged as one on every item."""
+    return value.strip().lower() in raw_text.strip().lower()
+
+
 def format_item(item: Item) -> str:
-    if item.quantity <= 1:
-        return f"a {item.name}"
-    return f"{item.quantity} {item.name}s"
+    label = f"a {item.name}" if item.quantity <= 1 else f"{item.quantity} {item.name}s"
+    if item.evidence and not _mentions(item.evidence, item.name):
+        label = f'{label} (heard as "{item.evidence}")'
+    return label
 
 
 def format_item_list(items: list[Item]) -> str:
