@@ -5,7 +5,9 @@ import { createSession, postTurn } from "./api";
 import type { SpeechHandle } from "./audio";
 import { speak } from "./audio";
 import ConfirmationModal from "./ConfirmationModal";
-import { displayValue, formatDate, formatItems, prettify } from "./format";
+import { displayValue, formatDate, formatItems, prettify, withHeardAs } from "./format";
+import LocationLinkInput from "./LocationLinkInput";
+import ReviewCard from "./ReviewCard";
 import { useRecorder } from "./useRecorder";
 
 type Turn = { speaker: "you" | "relay"; text: string };
@@ -24,6 +26,12 @@ const COLD_START_HINT_MS = 4_000;
 // unchanged), wrong to dump into the transcript's small panel_line as a
 // wall of text. ConfirmationModal is where that detail actually lives now.
 const BOOKING_CONFIRMED_TRANSCRIPT_LINE = "Booking confirmed — see the summary.";
+
+// The review-phase turn's agent_text is the same kind of long, single-
+// paragraph wall of text (the written summary plus "Is this all correct?"),
+// dumped into the same small transcript panel -- ReviewCard is where that
+// detail lives now, structured and delimited instead of one run-on block.
+const REVIEW_TRANSCRIPT_LINE = "Here's everything so far — take a look.";
 
 const MIME_EXTENSIONS: Record<string, string> = {
   "audio/webm": "webm",
@@ -53,13 +61,16 @@ function rowsFrom(state: BookingStateShape | null): Row[] {
   const when = [dateText, timeText].filter(Boolean).join(" · ");
   return [
     {
+      // Not displayValue: a corrected locality's discarded old value adds
+      // nothing as "(was: ...)" here -- see bookingSections.ts's identical
+      // choice for the confirmation modal / review card.
       label: "From",
-      value: displayValue(state.pickup.locality, (v) => v, "Say where"),
+      value: withHeardAs(state.pickup.locality.value ?? "Say where", state.pickup.raw_text.value),
       filled: !!state.pickup.locality.value,
     },
     {
       label: "To",
-      value: displayValue(state.drop.locality, (v) => v, "Say where"),
+      value: withHeardAs(state.drop.locality.value ?? "Say where", state.drop.raw_text.value),
       filled: !!state.drop.locality.value,
     },
     { label: "Stuff", value: items || "Say what", filled: items.length > 0 },
@@ -81,6 +92,7 @@ export default function App() {
   const [isSlowStart, setIsSlowStart] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
+  const [showReviewCard, setShowReviewCard] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const sessionRequestedRef = useRef(false);
   const speechRef = useRef<SpeechHandle | null>(null);
@@ -113,23 +125,38 @@ export default function App() {
     setShowConfirmation(false);
   }, [stopSpeaking]);
 
+  // Dismissing the review card is not a decision either way -- the booking
+  // isn't confirmed or rejected, just hidden. Talking (a correction, or a
+  // plain "yes") still works exactly as if it were open; it reappears on
+  // the next review-phase turn the same way it appeared on this one.
+  const closeReviewCard = useCallback(() => {
+    stopSpeaking();
+    setShowReviewCard(false);
+  }, [stopSpeaking]);
+
   const rows = useMemo(() => rowsFrom(bookingState), [bookingState]);
   const filledCount = rows.filter((r) => r.filled).length;
 
   const applyTurn = useCallback((response: TurnResponse | { agent_text: string }, userText?: string) => {
     const isFinal = "done" in response && response.done;
+    const isReview = "phase" in response && response.phase === "review";
     setTurns((prev) => [
       ...prev,
       ...(userText ? [{ speaker: "you" as const, text: userText }] : []),
       // The full agent_text is still what gets *spoken* (playResponse below
       // is called with the real, unabridged response) -- this only governs
-      // what's typed out in the small transcript panel, where the final
-      // turn's full paragraph read as a wall of text rather than a summary.
-      { speaker: "relay" as const, text: isFinal ? BOOKING_CONFIRMED_TRANSCRIPT_LINE : response.agent_text },
+      // what's typed out in the small transcript panel, where the review and
+      // final turns' full paragraph read as a wall of text rather than a
+      // summary. ReviewCard/ConfirmationModal are where that detail lives.
+      {
+        speaker: "relay" as const,
+        text: isFinal ? BOOKING_CONFIRMED_TRANSCRIPT_LINE : isReview ? REVIEW_TRANSCRIPT_LINE : response.agent_text,
+      },
     ]);
     if ("state" in response) {
       setBookingState(response.state);
       setDone(response.done);
+      setShowReviewCard(isReview);
       if (response.done) setShowConfirmation(true);
     }
   }, []);
@@ -169,6 +196,17 @@ export default function App() {
         setApiError("Could not reach the booking service. Refresh to try again.");
       });
   }, [applyTurn, playResponse]);
+
+  // A pasted map link produces the exact same TurnResponse shape a voice
+  // turn does (api/routes.py's submit_location_link mirrors /turn), so it
+  // is applied and spoken identically either way.
+  const handleLocationLinkResult = useCallback(
+    (response: TurnResponse) => {
+      applyTurn(response, response.user_text || undefined);
+      playResponse(response.audio_chunks, response.tts_fallback, response.agent_text);
+    },
+    [applyTurn, playResponse],
+  );
 
   const handleRecordingComplete = useCallback(
     (audio: Blob, mimeType: string) => {
@@ -276,19 +314,23 @@ export default function App() {
         </div>
 
         <div className="try__grid">
-          <div className="panel panel--dark">
-            <div className="panel__meta">
-              <span className="panel__meta-dot" />
-              {last ? last.speaker : "relay"}
+          {showReviewCard && bookingState ? (
+            <ReviewCard state={bookingState} onClose={closeReviewCard} />
+          ) : (
+            <div className="panel panel--dark">
+              <div className="panel__meta">
+                <span className="panel__meta-dot" />
+                {last ? last.speaker : "relay"}
+              </div>
+              <p className="panel__line">
+                {last ? last.text : "Say hi, and tell me about your move."}
+                <span className="cursor">|</span>
+              </p>
+              <div className="progress">
+                <div className="progress__fill" style={{ width: `${(filledCount / rows.length) * 100}%` }} />
+              </div>
             </div>
-            <p className="panel__line">
-              {last ? last.text : "Say hi, and tell me about your move."}
-              <span className="cursor">|</span>
-            </p>
-            <div className="progress">
-              <div className="progress__fill" style={{ width: `${(filledCount / rows.length) * 100}%` }} />
-            </div>
-          </div>
+          )}
 
           <div className="panel panel--light">
             <div className="panel__header">
@@ -304,18 +346,28 @@ export default function App() {
               )}
             </div>
             {rows.map((row) => (
-              <div className="row" key={row.label}>
-                <span
-                  className="row__dot"
-                  style={{ background: row.filled ? "var(--orange)" : "rgba(17,17,16,.14)" }}
-                />
-                <span className="row__label">{row.label}</span>
-                <span
-                  className="row__value"
-                  style={{ color: row.filled ? "var(--ink)" : "rgba(17,17,16,.34)" }}
-                >
-                  {row.value}
-                </span>
+              <div key={row.label}>
+                <div className="row">
+                  <span
+                    className="row__dot"
+                    style={{ background: row.filled ? "var(--orange)" : "rgba(17,17,16,.14)" }}
+                  />
+                  <span className="row__label">{row.label}</span>
+                  <span
+                    className="row__value"
+                    style={{ color: row.filled ? "var(--ink)" : "rgba(17,17,16,.34)" }}
+                  >
+                    {row.value}
+                  </span>
+                </div>
+                {(row.label === "From" || row.label === "To") && (
+                  <LocationLinkInput
+                    field={row.label === "From" ? "pickup" : "drop"}
+                    sessionId={sessionId}
+                    onResult={handleLocationLinkResult}
+                    onError={setApiError}
+                  />
+                )}
               </div>
             ))}
           </div>

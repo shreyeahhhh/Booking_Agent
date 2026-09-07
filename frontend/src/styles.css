@@ -469,6 +469,82 @@ button {
   letter-spacing: -0.02em;
 }
 
+/* ---- location link (paste a Google Maps link instead of saying it) ---- */
+
+.location-link__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 12px 23px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(17, 17, 16, 0.4);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.location-link__toggle:hover {
+  color: var(--orange);
+}
+
+.location-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px 23px;
+  animation: review-card-in 0.2s ease both;
+}
+
+.location-link__input {
+  flex: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  border: 1.5px solid rgba(17, 17, 16, 0.16);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+}
+.location-link__input:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+
+.location-link__submit {
+  flex: none;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cream);
+  background: var(--ink);
+  border: none;
+  border-radius: 10px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+.location-link__submit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.location-link__cancel {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(17, 17, 16, 0.16);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 /* ---- marquee ---- */
 
 .marquee {
@@ -745,8 +821,8 @@ button {
 .modal-card {
   position: relative;
   width: 100%;
-  max-width: 460px;
-  max-height: min(88vh, 720px);
+  max-width: 560px;
+  max-height: min(96vh, 900px);
   overflow-y: auto;
   background: var(--cream);
   border: 2px solid var(--ink);
@@ -866,6 +942,166 @@ button {
   width: 100%;
   justify-content: center;
   margin-top: 24px;
+}
+
+/* ---- review card ----
+   The mid-conversation "is this all correct?" check. Deliberately not the
+   confirmation modal's black/orange "done" language -- this sits inline in
+   the transcript panel's own grid slot (not a full-screen backdrop) so the
+   mic stays reachable, and it reads as lime/pending rather than
+   orange/final: the booking isn't confirmed yet, just up for a quick look. */
+
+@keyframes review-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes review-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.review-card {
+  position: relative;
+  min-width: 0;
+  min-height: 340px;
+  border-radius: 28px;
+  background: var(--lime);
+  border: 2px solid var(--ink);
+  padding: clamp(24px, 3vw, 40px);
+  animation: review-card-in 0.35s cubic-bezier(0.34, 1.2, 0.64, 1) both;
+}
+
+.review-card__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid rgba(17, 17, 16, 0.25);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.review-card__close:hover {
+  background: rgba(17, 17, 16, 0.1);
+  transform: rotate(90deg);
+}
+
+.review-card__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(17, 17, 16, 0.62);
+}
+
+.review-card__eyebrow-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink);
+  animation: blink 1.4s step-end infinite;
+}
+
+.review-card__prompt {
+  margin: 14px 0 2px;
+  font-size: clamp(28px, 3.6vw, 40px);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+}
+
+.review-card__hint {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: rgba(17, 17, 16, 0.68);
+  max-width: 46ch;
+}
+
+.review-card__sections {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.review-card__section {
+  border-top: 1.5px dashed rgba(17, 17, 16, 0.3);
+  padding-top: 10px;
+  opacity: 0;
+  animation: review-row-in 0.4s ease both;
+}
+
+.review-card__section-title {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(17, 17, 16, 0.55);
+  margin-bottom: 6px;
+}
+
+.review-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.review-card__row-label {
+  font-size: 12.5px;
+  color: rgba(17, 17, 16, 0.55);
+  flex: none;
+}
+
+.review-card__row-value {
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-align: right;
+}
+
+.review-card__note {
+  margin: 0 0 4px;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.review-card__note:last-child {
+  margin-bottom: 0;
+}
+
+.review-card__section--assumed {
+  border-top: none;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1.5px dashed rgba(17, 17, 16, 0.4);
+  border-radius: 14px;
+  padding: 10px 14px;
 }
 
 /* ---- misc ---- */

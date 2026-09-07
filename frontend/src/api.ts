@@ -36,8 +36,13 @@ export type FieldValue<T> = {
   revisions: Array<Revision<T>>;
 };
 
-/** app/domain/state.Address as JSON. */
+/** app/domain/state.Address as JSON. `raw_text` is what STT actually heard
+ * for the locality, kept alongside the model's cleaned-up `locality.value`
+ * so a mis-transcription that got silently "corrected" stays visible --
+ * see format.ts's `withHeardAs`, mirroring conversation/summary.py's
+ * `_render_address` on the backend. */
 export type AddressShape = {
+  raw_text: FieldValue<string>;
   locality: FieldValue<string>;
   floor: FieldValue<number>;
   has_lift: FieldValue<boolean>;
@@ -45,8 +50,10 @@ export type AddressShape = {
 
 /** app/domain/state.Item as JSON -- a plain object, not Field[T]-wrapped:
  * the backend manages the item list as a collection (append/remove/correct
- * by name), not a single slot, so there is no single "was: X" to show. */
-export type ItemShape = { name: string; quantity: number };
+ * by name), not a single slot, so there is no single "was: X" to show.
+ * `evidence` is the literal phrase STT heard for this item, used the same
+ * "(heard as ...)" way as locality's raw_text -- see format.ts. */
+export type ItemShape = { name: string; quantity: number; evidence: string | null };
 
 /** app/domain/state.Note as JSON. */
 export type NoteShape = { text: string; turn: number | null };
@@ -108,4 +115,20 @@ export function postTurn(sessionId: string, audio: Blob, filename: string): Prom
   form.append("session_id", sessionId);
   form.append("audio", audio, filename);
   return fetch("/api/turn", { method: "POST", body: form }).then(parseOrThrow<TurnResponse>);
+}
+
+/** An exact pickup/drop point via a pasted Google Maps link, instead of
+ * saying a locality out loud -- see api/routes.py's `submit_location_link`.
+ * Returns the same TurnResponse shape /turn does, so App.tsx's applyTurn
+ * handles the result identically either way. */
+export function submitLocationLink(
+  sessionId: string,
+  field: "pickup" | "drop",
+  url: string,
+): Promise<TurnResponse> {
+  return fetch(`/api/session/${sessionId}/location`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ field, url }),
+  }).then(parseOrThrow<TurnResponse>);
 }
