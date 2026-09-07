@@ -21,6 +21,7 @@ from app.conversation import fastpath, machine, orchestrator, templates
 from app.conversation.fastpath import MetaCommand
 from app.domain.specs import get_field
 from app.domain.state import ExtractionResult, FieldStatus, Intent, Patch, PatchOp
+from app.llm import scope_guard
 from app.llm.extractor import Exchange
 from app.services import maps, stt, tts
 from app.session import store
@@ -257,6 +258,15 @@ def _connection_failure_reprompt(last_question: str | None) -> str:
     return f"{apology} {last_question}" if last_question else apology
 
 
+# A fixed, non-LLM-generated redirect -- deliberately not routed through
+# templates.py's usual per-field variety, and never spoken by the model
+# itself (llm/scope_guard.py never produces text, only allowed/intent): a
+# guardrail's own refusal message should be exactly as predictable as the
+# guardrail itself, not one more thing an adversarial or merely persistent
+# user could talk the model into rephrasing.
+_SCOPE_REJECTION_MESSAGE = "I can help with your delivery booking. What would you like to do?"
+
+
 async def _process_turn(
     client: AsyncGroq,
     cartesia_client: httpx.AsyncClient | None,
@@ -320,12 +330,21 @@ async def _process_turn(
         return _TurnOutcome(session, text, templates.GREETING, audio_chunks)
 
     if fp_result is not None and fp_result.extraction is not None:
-        # A confident fast-path match: zero LLM calls for this turn.
+        # A confident fast-path match: zero LLM calls for this turn. Already
+        # in scope by construction -- it is a direct answer to the agent's
+        # own pending question -- so the scope guard below does not apply.
         outcome = orchestrator.finish_turn(
             fp_result.extraction,
             session.conversation,
             max_clarify_attempts=settings.max_clarify_attempts,
         )
+    elif not (await scope_guard.classify(client, model=settings.scope_guard_model, utterance=text)).allowed:
+        # Off-topic, or the guard itself failed closed (see scope_guard.py's
+        # module docstring) -- no state change, no extractor call, same
+        # "just speak a fixed reply" shape as the noise/connection-failure
+        # branches above.
+        audio_chunks = await _synthesize(cartesia_client, settings, _SCOPE_REJECTION_MESSAGE)
+        return _TurnOutcome(session, text, _SCOPE_REJECTION_MESSAGE, audio_chunks)
     else:
         outcome = await orchestrator.process_utterance(
             client,

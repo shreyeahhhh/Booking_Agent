@@ -67,18 +67,33 @@ def settings(tmp_path):
     return get_settings().model_copy(update={"tts_cache_dir": tmp_path})
 
 
-def _mock_client(*, stt_text=None, llm_content=None):
-    calls = {"stt": 0, "llm": 0}
+_SCOPE_GUARD_MODEL = get_settings().scope_guard_model
+
+
+def _mock_client(*, stt_text=None, llm_content=None, scope_allowed=True):
+    """`scope_allowed` defaults to True so every existing test exercising a
+    normal booking turn keeps working unchanged -- llm/scope_guard.py now
+    sits in front of the extractor call, distinguished here purely by which
+    model a given chat-completion call asked for, the same signal
+    api/routes.py itself uses to route the two calls to two different
+    models."""
+    calls = {"stt": 0, "llm": 0, "scope": 0}
     client = AsyncMock()
 
     async def transcribe(**_kwargs):
         calls["stt"] += 1
         return AsyncMock(text=stt_text)
 
-    async def chat_create(**_kwargs):
-        calls["llm"] += 1
+    async def chat_create(**kwargs):
+        if kwargs.get("model") == _SCOPE_GUARD_MODEL:
+            calls["scope"] += 1
+            intent = "booking_start" if scope_allowed else "unrelated"
+            content = json.dumps({"allowed": scope_allowed, "intent": intent})
+        else:
+            calls["llm"] += 1
+            content = llm_content
         response = AsyncMock()
-        response.choices = [AsyncMock(message=AsyncMock(content=llm_content))]
+        response.choices = [AsyncMock(message=AsyncMock(content=content))]
         return response
 
     client.audio.transcriptions.create = transcribe
@@ -121,7 +136,7 @@ async def test_empty_audio_produces_a_reprompt_with_no_api_calls_at_all(settings
     session = _session(last_question="What floor is the pickup on?")
     outcome = await _process_turn(client, cartesia_client, settings, session, b"", "audio.webm")
     assert outcome.agent_text == "Sorry, I didn't catch that. What floor is the pickup on?"
-    assert client.calls == {"stt": 0, "llm": 0}
+    assert client.calls == {"stt": 0, "llm": 0, "scope": 0}
     assert cartesia_client.calls["tts"] == 1  # the re-prompt itself is still spoken
 
 
@@ -243,6 +258,10 @@ async def test_a_fast_path_hit_answers_without_calling_the_llm(settings):
     assert client.calls["llm"] == 0
     assert client.calls["stt"] == 1
     assert cartesia_client.calls["tts"] == 1
+    # A fast-path hit is a direct answer to the agent's own pending
+    # question -- already in scope by construction, so the scope guard
+    # (llm/scope_guard.py) must not even be consulted.
+    assert client.calls["scope"] == 0
 
 
 # --- fast-path miss: falls through to the real extractor -------------------
@@ -259,6 +278,9 @@ async def test_a_fast_path_miss_falls_through_to_the_llm(settings):
     booking = outcome.session.conversation.booking
     assert get_field(booking, "pickup.locality").value == "Koramangala"
     assert client.calls["llm"] == 1
+    # In scope, so the guard runs once and lets the turn through to the
+    # extractor -- see the "scope guard" section below for the reject path.
+    assert client.calls["scope"] == 1
 
 
 async def test_recent_turns_accumulate_after_a_real_llm_turn(settings):
@@ -272,6 +294,41 @@ async def test_recent_turns_accumulate_after_a_real_llm_turn(settings):
     assert len(outcome.session.recent_turns) == 2
     assert outcome.session.recent_turns[0].text == "Koramangala"
     assert outcome.session.decision is not None  # something is now pending next
+
+
+# --- scope guard: off-topic never reaches the extractor --------------------
+
+
+async def test_an_off_topic_utterance_gets_the_fixed_redirect_with_no_llm_call(settings):
+    client = _mock_client(stt_text="what is 25 times 48", scope_allowed=False)
+    cartesia_client = _mock_cartesia_client()
+    decision = SlotDecision("pickup.locality", "pickup location", SlotReason.MISSING)
+    session = _session(last_question="Where are you moving from?", decision=decision)
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
+    assert outcome.agent_text == "I can help with your delivery booking. What would you like to do?"
+    assert client.calls["scope"] == 1
+    assert client.calls["llm"] == 0  # the whole point: never reaches the extractor
+    assert outcome.session is session  # no state change -- the pending question survives
+
+
+async def test_a_scope_guard_failure_also_produces_the_fixed_redirect(settings):
+    """The guard's own "fails closed" contract (llm/scope_guard.py), proven
+    end to end: a malformed classifier response must reject the turn the
+    same way a confident "unrelated" verdict does, not fall through to the
+    extractor just because the guard itself could not be reached."""
+    client = _mock_client(stt_text="anything", llm_content=_VALID_LOCALITY_RESPONSE)
+    client.chat.completions.create = AsyncMock(
+        return_value=AsyncMock(choices=[AsyncMock(message=AsyncMock(content="not json{{{"))])
+    )
+    cartesia_client = _mock_cartesia_client()
+    decision = SlotDecision("pickup.locality", "pickup location", SlotReason.MISSING)
+    session = _session(last_question="Where are you moving from?", decision=decision)
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
+    assert outcome.agent_text == "I can help with your delivery booking. What would you like to do?"
 
 
 # --- TTS unavailable: agent_text still returned, audio_chunks is None ------

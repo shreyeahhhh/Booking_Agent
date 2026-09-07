@@ -30,22 +30,31 @@ mic -> MediaRecorder
       v
                 1. STT           Groq whisper-large-v3-turbo -> user_text
                 2. FAST PATH?    deterministic classifier
-                                   hit  -> skip to step 4  (0 LLM calls)
+                                   hit  -> skip to step 5  (0 LLM calls)
                                    miss -> step 3
-                3. EXTRACTOR     Groq gpt-oss-120b, strict JSON schema
+                3. SCOPE GUARD   Groq gpt-oss-20b, strict JSON schema
+                                   -> {allowed, intent} (llm/scope_guard.py)
+                                   not allowed -> fixed redirect, skip to
+                                                  step 8 (1 LLM call total)
+                                   allowed     -> step 4
+                4. EXTRACTOR     Groq gpt-oss-120b, strict JSON schema
                                    -> ExtractionResult{intent, patches[]}
-                4. REDUCER       validate -> normalise -> apply -> event log
-                5. COMPLETENESS  pure fn -> missing[], ambiguous[], conflicts[]
-                6. POLICY        pure fn -> next action + target slot
-                7. RESPONDER     template render (NO LLM)
-                8. TTS           cache hit? serve bytes
+                5. REDUCER       validate -> normalise -> apply -> event log
+                6. COMPLETENESS  pure fn -> missing[], ambiguous[], conflicts[]
+                7. POLICY        pure fn -> next action + target slot
+                8. RESPONDER     template render (NO LLM)
+                9. TTS           cache hit? serve bytes
                                  cache miss? Cartesia -> cache
       | <- {audio, agent_text, user_text, state, missing, phase}
       v
 play audio + render live state panel
 ```
 
-**At most one LLM call per turn, frequently zero.**
+**At most two LLM calls per turn (the scope guard, then the extractor),
+frequently zero, and never more than one when the turn turns out to be
+off-topic.** Revised from the original "at most one" once step 3 was added
+-- see MASTER_PLAN.md's scope-guardrail entry for why a second, separate,
+much cheaper call was worth that cost.
 
 ## Components
 
@@ -54,6 +63,7 @@ play audio + render live state panel
 | Booking state | `domain/state.py` | Yes | `BookingState` and `Field[T]` -- the typed schema every other component reads and writes |
 | Field specification | `domain/specs.py` | Yes | Declarative `FieldSpec` table: priority, conditional-requirement predicates, answer types |
 | Extractor | `llm/extractor.py` | No | Utterance -> `ExtractionResult` (patches with evidence + confidence) |
+| Scope guard | `llm/scope_guard.py` | No | Utterance -> `{allowed, intent}`; keeps off-topic requests from ever reaching the extractor |
 | Reducer | `domain/reducer.py` | Yes | Validate, normalise and apply patches; append to event log |
 | Normalisers | `domain/normalizers.py` | Yes | Relative dates, time windows, quantities. **Never the LLM.** |
 | Inference | `domain/inference.py` | Yes | Vehicle type and helper count from the item list |
@@ -99,14 +109,18 @@ stage must not restart requirement gathering.
 
 ## When the LLM is called
 
-Exactly one trigger: a user utterance the fast-path classifier did not confidently
-handle. In practice:
+Exactly one trigger reaches the extractor at all: a user utterance the fast-path
+classifier did not confidently handle. In practice:
 
 - any free-form utterance in `GATHERING`, `CLARIFYING` or `CORRECTING`
 - a `REVIEW` utterance that is not a clean yes/no ("yes but change the time to 4pm")
 - any utterance carrying multiple facts, a correction, or vague language
 
-One call, one response. No chaining, no agent loop, no reflection pass.
+Every one of those first passes through `llm/scope_guard.py` (a second, separate,
+much smaller call) -- see the turn loop diagram above. A fast-path hit skips both;
+an off-topic utterance reaches the guard but never the extractor.
+
+One extractor call, one response. No chaining, no agent loop, no reflection pass.
 
 ## When the LLM is NOT called
 
@@ -123,6 +137,7 @@ One call, one response. No chaining, no agent loop, no reflection pass.
 | **All state transitions** | Guard functions |
 | Bare number answer to a numeric slot (digit, cardinal or ordinal word) | Gated on expected answer type |
 | A pasted Google Maps link for pickup/drop (`POST /session/{id}/location`) | URL parsing (`services/maps.py`) |
+| **The off-topic redirect message itself** (the allowed/not decision is a small classifier call -- `llm/scope_guard.py`) | Fixed string, same as every other template-rendered reply |
 
 ### Fast paths fail open
 

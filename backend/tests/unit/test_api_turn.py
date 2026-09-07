@@ -38,15 +38,25 @@ _VALID_LOCALITY_RESPONSE = json.dumps(
 )
 
 
-def _mock_client(*, stt_text="Koramangala", llm_content=_VALID_LOCALITY_RESPONSE):
+_SCOPE_GUARD_MODEL = get_settings().scope_guard_model
+
+
+def _mock_client(*, stt_text="Koramangala", llm_content=_VALID_LOCALITY_RESPONSE, scope_allowed=True):
+    """llm/scope_guard.py's pre-filter now sits in front of the extractor
+    call -- distinguished purely by which model a given chat-completion
+    call asked for, same as test_process_turn.py's identical mock."""
     client = AsyncMock()
+    scope_response = json.dumps(
+        {"allowed": scope_allowed, "intent": "booking_start" if scope_allowed else "unrelated"}
+    )
 
     async def transcribe(**_kwargs):
         return AsyncMock(text=stt_text)
 
-    async def chat_create(**_kwargs):
+    async def chat_create(**kwargs):
+        content = scope_response if kwargs.get("model") == _SCOPE_GUARD_MODEL else llm_content
         response = AsyncMock()
-        response.choices = [AsyncMock(message=AsyncMock(content=llm_content))]
+        response.choices = [AsyncMock(message=AsyncMock(content=content))]
         return response
 
     client.audio.transcriptions.create = transcribe
@@ -114,6 +124,33 @@ def test_a_full_turn_via_multipart_upload_updates_the_booking_state(client):
     assert body["state"]["pickup"]["locality"]["value"] == "Koramangala"
     assert body["phase"] == "gathering"
     assert body["done"] is False
+
+
+def test_an_off_topic_turn_returns_the_fixed_redirect_via_http(tmp_path):
+    """test_process_turn.py already covers this logic directly and
+    precisely -- this is the narrower "does the real endpoint actually wire
+    llm/scope_guard.py in" check, the same job this file does for every
+    other branch of the pipeline."""
+    app.dependency_overrides[get_groq_client] = lambda: _mock_client(scope_allowed=False)
+    app.dependency_overrides[get_cartesia_client] = _mock_cartesia_client
+    app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
+        update={"tts_cache_dir": tmp_path}
+    )
+    try:
+        with TestClient(app) as test_client:
+            session_id = test_client.post("/api/session").json()["session_id"]
+            response = test_client.post(
+                "/api/turn",
+                data={"session_id": session_id},
+                files={"audio": ("clip.webm", b"fake-audio-bytes", "audio/webm")},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_text"] == "I can help with your delivery booking. What would you like to do?"
+    assert body["state"]["pickup"]["locality"]["value"] is None  # nothing was extracted
 
 
 def test_turn_with_an_unknown_session_id_returns_404(client):

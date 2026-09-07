@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # --- Models ------------------------------------------------------------
     groq_llm_model: str = "openai/gpt-oss-120b"
     groq_stt_model: str = "whisper-large-v3-turbo"
+    # A smaller, separate model for llm/scope_guard.py's pre-filter -- live-
+    # verified (10/10 on the assessment's own required cases, plus borderline
+    # and prompt-injection probes) to be just as reliable as the main model
+    # for this much simpler yes/no-plus-category schema, at lower cost and
+    # on its own separate Groq daily quota, independent of the main model's.
+    scope_guard_model: str = "openai/gpt-oss-20b"
     cartesia_tts_model: str = "sonic-latest"
     # "Skylar" -- an approachable, professional voice per Cartesia's own voice
     # library, a reasonable fit for a booking assistant. `sonic-latest` (not a
