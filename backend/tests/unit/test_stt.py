@@ -7,13 +7,20 @@ approach as test_extractor.py -- the live proof that Groq's audio endpoint
 and the silence-hallucination assumptions actually hold is test_stt_live.py.
 """
 
+import time
 from unittest.mock import AsyncMock
 
 import groq
 import httpx
 import pytest
 
-from app.services.stt import _PROMPT_ECHO_PREFIXES, _has_repeated_word_loop, is_noise, transcribe
+from app.services.stt import (
+    _PROMPT_ECHO_PREFIXES,
+    _RETRY_BACKOFF_SECONDS,
+    _has_repeated_word_loop,
+    is_noise,
+    transcribe,
+)
 
 
 def _rate_limit_error(headers: dict[str, str]) -> groq.RateLimitError:
@@ -139,9 +146,24 @@ async def test_transcribe_retries_once_after_a_connection_error_then_succeeds():
 
 async def test_transcribe_returns_none_after_the_retry_budget_is_exhausted():
     err = groq.APIConnectionError(request=AsyncMock())
-    client = _mock_client(side_effects=[err, err])
+    client = _mock_client(side_effects=[err, err, err])
     result = await transcribe(client, model="m", audio=b"x", filename="a.webm")
     assert result is None
+
+
+async def test_transcribe_pauses_briefly_between_connection_error_retries():
+    """A same-instant re-attempt is no more likely to survive a transient
+    network blip than the attempt that just failed -- see stt.py's
+    _RETRY_BACKOFF_SECONDS. Two real errors force two waits; both being real
+    (not mocked) sleeps is deliberate, matching this file's existing
+    short-real-Retry-After tests rather than mocking time."""
+    err = groq.APIConnectionError(request=AsyncMock())
+    client = _mock_client(side_effects=[err, err, "third floor"])
+    start = time.monotonic()
+    result = await transcribe(client, model="m", audio=b"x", filename="a.webm")
+    elapsed = time.monotonic() - start
+    assert result == "third floor"
+    assert elapsed >= 2 * _RETRY_BACKOFF_SECONDS - 0.05  # small tolerance for scheduling jitter
 
 
 async def test_transcribe_does_not_retry_a_bad_request_error():

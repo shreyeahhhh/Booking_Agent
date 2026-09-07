@@ -58,7 +58,16 @@ FALLBACK_RESULT = ExtractionResult(
     intent=Intent.UNCLEAR,
     patches=[],
     unresolved_mentions=[],
-    suggested_reply="Sorry, I didn't quite catch that -- could you say that again?",
+    # Every path that returns this (retry budget exhausted, a rate limit too
+    # long to wait out, a repair pass that still fails to parse) is a service
+    # failure, never the model genuinely trying and failing to understand
+    # real speech -- that case is a *successful* call that parses with its
+    # own intent=unclear, a different code path entirely (see extract()'s
+    # docstring). "Didn't quite catch that" used to cover both, which reads
+    # as "you were unclear" for a failure that was never about the user's
+    # speech at all -- the same bug class services/stt.py's connection
+    # failures had, fixed there first.
+    suggested_reply="Sorry, I'm having trouble processing that right now -- could you try again?",
 )
 
 

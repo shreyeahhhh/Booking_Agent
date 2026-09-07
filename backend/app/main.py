@@ -62,6 +62,12 @@ async def lifespan(app: FastAPI):
         if settings.cartesia_is_configured
         else None
     )
+    # A third, unconfigured client for resolving a pasted Google Maps link
+    # (services/maps.py) -- no base_url or credential, since it only ever
+    # follows a redirect on an arbitrary URL a user pasted. Always created,
+    # unlike the two above: parsing a map link needs no API key at all, so
+    # there is no "unconfigured" state for it to be in.
+    app.state.http_client = httpx.AsyncClient()
     try:
         yield
     finally:
@@ -69,6 +75,7 @@ async def lifespan(app: FastAPI):
             await app.state.groq_client.close()
         if app.state.cartesia_client is not None:
             await app.state.cartesia_client.aclose()
+        await app.state.http_client.aclose()
 
 
 app = FastAPI(title="Voice Booking Agent", version="0.1.0", lifespan=lifespan)

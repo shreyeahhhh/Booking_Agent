@@ -54,7 +54,16 @@ from app.retry import retry_after_seconds
 log = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 15
-_MAX_ATTEMPTS = 2  # one call + one retry, for transient failures only
+_MAX_ATTEMPTS = 3  # one call + two retries, for transient failures only
+# A brief pause before re-attempting a connection/server error specifically
+# (not a rate limit, which already waits out the API's own Retry-After) --
+# observed live, a run of these can fail back-to-back with zero gap even
+# after the Groq SDK's own internal retry already tried and failed, which a
+# same-instant re-attempt from this loop is no more likely to survive than
+# the attempt that just failed. Half a second is enough for a brief network
+# blip to clear without making a real, sustained outage take meaningfully
+# longer to give up on.
+_RETRY_BACKOFF_SECONDS = 0.5
 
 # Unlike llm/extractor.py, a 400 here is NOT retried: extractor.py's 400 is a
 # specific, observed strict-mode schema violation that a retry can plausibly
@@ -256,6 +265,8 @@ async def transcribe(
             log.warning(
                 "stt call failed (attempt %d): %s: %s", attempt + 1, type(err).__name__, err
             )
+            if attempt < _MAX_ATTEMPTS - 1:
+                await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
 
     log.warning("stt retry budget exhausted: %s", last_error)
     return None

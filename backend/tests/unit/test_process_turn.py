@@ -141,6 +141,36 @@ def test_noise_reprompt_with_no_prior_question_is_just_the_apology():
     assert _noise_reprompt(None) == "Sorry, I didn't catch that."
 
 
+async def test_stt_connection_failure_gets_a_distinct_reprompt_from_noise(settings):
+    """The bug this guards against, reported live: a genuine STT outage
+    (services/stt.py's retry budget exhausted against a connection error)
+    produced the same "Sorry, I didn't catch that" message noise/silence
+    gets -- misleading, since it reads as "you mumbled" for a failure that
+    had nothing to do with what the user said. Distinct from
+    test_a_noise_hallucination_produces_a_reprompt_with_no_llm_call above,
+    which is the case this message must NOT fire for."""
+    client = _mock_client()
+    connection_error = groq.APIConnectionError(request=AsyncMock())
+
+    async def always_fails(**_kwargs):
+        raise connection_error
+
+    client.audio.transcriptions.create = always_fails
+    cartesia_client = _mock_cartesia_client()
+    session = _session(last_question="Which city are you moving to?")
+
+    outcome = await _process_turn(
+        client, cartesia_client, settings, session, b"fake-audio", "audio.webm"
+    )
+
+    assert outcome.agent_text == (
+        "Sorry, I'm having trouble connecting right now -- could you try again? "
+        "Which city are you moving to?"
+    )
+    assert client.calls["llm"] == 0
+    assert outcome.session is session  # nothing about the conversation changed
+
+
 async def test_malformed_audio_produces_a_reprompt_instead_of_a_raw_500(settings):
     """Confirmed live, not hypothetical: a real MediaRecorder clip carrying
     no actual signal (a muted/disconnected mic recording through the full
