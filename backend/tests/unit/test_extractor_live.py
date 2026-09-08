@@ -17,7 +17,7 @@ from groq import AsyncGroq
 from app.config import get_settings
 from app.domain.reducer import apply, confirm_all
 from app.domain.specs import get_field
-from app.domain.state import BookingState
+from app.domain.state import BookingState, Patch, PatchOp, VehicleType
 from app.llm.extractor import Exchange, _build_messages, extract
 from app.llm.schema import EXTRACTION_RESPONSE_FORMAT
 
@@ -76,6 +76,78 @@ async def test_multi_turn_conversation_with_a_correction():
 
     final_state = apply(state, result_2.patches).state
     assert get_field(final_state, "schedule.date").revisions, "expected a revision to be recorded"
+
+
+def _state_with_inferred_tata_ace() -> BookingState:
+    state = apply(
+        BookingState(), [Patch(op=PatchOp.APPEND, field="goods.items", value={"name": "sofa", "quantity": 1})]
+    ).state
+    assert get_field(state, "service.vehicle_type").value == VehicleType.TATA_ACE
+    return state
+
+
+_VEHICLE_CONFIRM_QUESTION = (
+    "Based on what you're moving, a Tata Ace with 1 helper should do it — sound good?"
+)
+_VEHICLE_CONFIRM_EXCHANGE = [
+    Exchange("agent", f"Got it — a sofa. {_VEHICLE_CONFIRM_QUESTION}"),
+]
+
+
+async def test_a_vague_bigger_vehicle_request_lists_real_options_with_no_patch():
+    """Explicit request: "if the customer asks for a bigger vehicle, the
+    agent must inform about the different vehicle options available" --
+    not guess which specific one "bigger" means. A vague comparative names
+    none of the five real vehicles, so Rule 1 ("never guess a plausible
+    value") means this must come back as intent=question with no
+    service.vehicle_type patch, and a suggested_reply grounded in the real
+    catalog extractor.md now spells out by name for exactly this case."""
+    client = AsyncGroq(api_key=_settings.groq_api_key)
+    state = _state_with_inferred_tata_ace()
+
+    result = await extract(
+        client,
+        model=_settings.groq_llm_model,
+        state=state,
+        last_question=_VEHICLE_CONFIRM_QUESTION,
+        recent_turns=_VEHICLE_CONFIRM_EXCHANGE,
+        utterance="Can I get a bigger vehicle?",
+    )
+    vehicle_patches = [p for p in result.patches if p.field == "service.vehicle_type"]
+    assert not vehicle_patches, f"expected no guessed vehicle patch, got: {vehicle_patches}"
+    assert result.intent.value == "question", f"expected intent=question, got {result.intent!r}"
+    assert result.suggested_reply, "expected a suggested_reply listing real options"
+    reply_lower = result.suggested_reply.lower()
+    real_options_named = sum(
+        term in reply_lower for term in ("two-wheeler", "three-wheeler", "tata ace", "pickup", "tempo")
+    )
+    assert real_options_named >= 2, f"suggested_reply did not name real options: {result.suggested_reply!r}"
+
+
+async def test_naming_a_specific_vehicle_produces_a_correction_patch():
+    """The other half of the same request: once the customer names a
+    specific vehicle, the change must actually take effect -- op "correct"
+    against the already-inferred tata_ace, not a fresh "set" (Rule 4), and
+    the reducer must accept it as the real enum value."""
+    client = AsyncGroq(api_key=_settings.groq_api_key)
+    state = _state_with_inferred_tata_ace()
+
+    result = await extract(
+        client,
+        model=_settings.groq_llm_model,
+        state=state,
+        last_question=_VEHICLE_CONFIRM_QUESTION,
+        recent_turns=_VEHICLE_CONFIRM_EXCHANGE,
+        utterance="Let's go with the 8-foot pickup instead.",
+    )
+    vehicle_patches = [p for p in result.patches if p.field == "service.vehicle_type"]
+    assert vehicle_patches, f"expected a service.vehicle_type patch, got: {result.patches}"
+    patch = vehicle_patches[0]
+    assert patch.value == "pickup_8ft", f"expected pickup_8ft, got {patch.value!r}"
+    assert patch.op.value == "correct", f"expected op=correct, got {patch.op!r}"
+
+    final_state = apply(state, result.patches).state
+    assert get_field(final_state, "service.vehicle_type").value == VehicleType.PICKUP_8FT
 
 
 async def test_measure_real_prompt_token_usage():

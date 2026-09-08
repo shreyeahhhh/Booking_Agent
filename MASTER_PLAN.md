@@ -1589,6 +1589,67 @@ parametrization.
 
 ---
 
+## Phase 3.14 — Vehicle change requests: inform, then agree
+
+Explicit request: "if the customer asks for a bigger vehicle, the agent must inform about
+the different vehicle options available. If the customer wants to change the vehicle, then
+they must be able to and the agent must agree." Investigated before writing anything, per
+this project's usual discipline, and found three separate gaps, not one:
+
+1. **No informational grounding.** `extractor.md` listed the five vehicle codenames
+   (`two_wheeler` ... `tempo_14ft`) for pattern-matching but never their human names, sizes,
+   or ordering, and `service.vehicle_type` is deliberately excluded from the
+   auto-generated field reference (it is `RequirementKind.INFERRED`, not
+   REQUIRED/CONDITIONAL -- `prompt_builder.py`'s own docstring explains why). A question like
+   "what are my vehicle options" was already routed to the model's free-text
+   `suggested_reply` (the same mechanism every other general question uses --
+   `orchestrator._uses_suggested_reply`), but with nothing grounding it in the *real* catalog,
+   risking an answer that does not match what `templates.py` would actually call the vehicle
+   later.
+2. **"Bigger" is not one of the five.** The old prompt's own example ("send a bigger truck")
+   implied a vague comparative should resolve straight to a patch, with no stated ordering and
+   no rule for what to do without a clear target -- exactly the kind of guessed value Rule 1
+   ("never infer a plausible value") exists to forbid everywhere else in this prompt. Vehicle
+   sizing is already deterministic, keyword-driven logic in `domain/inference.py`
+   (`_VEHICLE_TIERS`) by design (see that module's own docstring on why this is a lookup table,
+   not a model) -- letting the LLM freelance a size-comparison on top of that would be the same
+   category of mistake the project has avoided everywhere else (dates, category, item names).
+3. **A confirmed regression, found by reading the actual acknowledgment output, not by
+   reasoning about the code:** even when the extractor *did* emit a correct
+   `service.vehicle_type` patch, `templates.py`'s `_simple_fragment` had no branch for it (or
+   for `service.helpers_required`) -- it fell through to `None`. The reducer accepted the
+   change correctly (a user-provided value gets `FieldStatus.PROVIDED`, which the
+   `_recompute_derived_fields` re-inference guard already protects from being silently
+   overwritten -- this part was already right), but the agent said nothing about it. In a
+   voice-only interface with no transcript to check, a silently-accepted change is
+   indistinguishable from an ignored one -- exactly what "the agent must agree" was asking not
+   to happen. Same shape as the boolean-fields acknowledgment regression `test_templates.py`
+   already has a test for; this is the same bug in a field that test never covered.
+
+Fixed as three matching pieces, not one:
+- `extractor.md`: SPECIAL FIELDS now names all five vehicles by their real, spoken names,
+  smallest to largest, and states the rule plainly -- a patch only for a *specifically named*
+  vehicle (op "set" or "correct", per Rule 4), never a guessed comparative. A vague "bigger
+  vehicle" / "anything smaller" gets `intent: question` and a `suggested_reply` that lists
+  these same five options, in these same words, instead of a guess. New worked example added
+  showing both halves back to back (the vague question, then a specific follow-up choice).
+- `templates.py`: added a `format_helpers` formatter (factored out of
+  `_confirm_inferred_question`, which had the same helper-count phrase inlined already) and
+  `_simple_fragment` branches for `service.vehicle_type` / `service.helpers_required`, so an
+  explicit change is now acknowledged out loud ("Got it, updated — a 14-foot tempo.").
+
+Verified live, not assumed: a state with an inferred `tata_ace` (from a single sofa, matching
+`inference.py`'s own calibration example), asked "Can I get a bigger vehicle?", produced zero
+`service.vehicle_type` patches, `intent: question`, and a `suggested_reply` naming at least
+two of the five real options. The same state told "Let's go with the 8-foot pickup instead"
+produced a single `op: correct` patch with `value: "pickup_8ft"`, which the reducer applied
+correctly. New regression coverage: `test_a_vague_bigger_vehicle_request_lists_real_options_
+with_no_patch` and `test_naming_a_specific_vehicle_produces_a_correction_patch` in
+`test_extractor_live.py`; `test_an_explicit_vehicle_change_is_acknowledged` and
+`test_an_explicit_helper_count_change_is_acknowledged` in `test_templates.py`.
+
+---
+
 ## Phase 4 — Deployment and resilience (Day 4)
 
 **Deploy first thing in the morning, before any polish.**

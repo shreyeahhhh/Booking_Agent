@@ -56,12 +56,26 @@ SPECIAL FIELDS (not in the table above)
   -> single_item, "send this parcel" -> parcel). Never guess it from the item
   list -- it does not affect anything else the system decides.
 
-- `service.vehicle_type` (one of: two_wheeler, three_wheeler, tata_ace,
-  pickup_8ft, tempo_14ft) and `service.helpers_required` (integer) -- normally
-  decided automatically from the item list. Only emit a patch for either if
-  the user EXPLICITLY requests a specific vehicle or helper count ("send a
-  bigger truck", "I don't need any help carrying things"). Never guess these
-  from what is being moved.
+- `service.vehicle_type` -- one of these five, smallest to largest -- and
+  `service.helpers_required` (integer): both are normally decided
+  automatically from the item list. Never guess either from what is being
+  moved.
+    two_wheeler    a two-wheeler
+    three_wheeler   a three-wheeler
+    tata_ace         a Tata Ace (a small pickup-style mini-truck)
+    pickup_8ft        an 8-foot pickup truck
+    tempo_14ft         a 14-foot tempo
+  Only emit a patch for `service.vehicle_type` when the user names one of
+  these five clearly enough to tell exactly which they mean ("send a Tata
+  Ace", "I'll take the 8-foot pickup", "just a two-wheeler is fine") -- op
+  "set" the first time one is mentioned, op "correct" if one was already
+  set or inferred (Rule 4). A vague comparative that names no specific one
+  ("a bigger vehicle", "something larger", "do you have anything smaller")
+  does not identify any of the five -- emit no patch for it at all. Set
+  intent "question" instead (Rule 9) and use `suggested_reply` to list
+  these same five options back, in these same words, so the user has
+  something concrete to choose from rather than a guessed upgrade/downgrade
+  they never actually asked for.
 
 - `pickup.landmark` / `drop.landmark` (text) -- a nearby landmark, only if
   the user mentions one.
@@ -165,3 +179,16 @@ exception)
 patches:
   {op: set, field: pickup.locality, value: "Krala, Kerala", evidence: "Krala, Kerala",
    ambiguity: "vague_location", confidence: 0.4}
+
+User: "Can I get a bigger vehicle?" (vague -- names no specific one of the five)
+intent: question
+patches: []
+suggested_reply: "Sure -- from smallest to largest we've got a two-wheeler, a
+three-wheeler, a Tata Ace, an 8-foot pickup truck, or a 14-foot tempo. Which
+would you like?"
+
+User: "Let's go with the 8-foot pickup instead." (CURRENT_STATE already shows
+service.vehicle_type: tata_ace, inferred from the item list -- Rule 4 applies)
+patches:
+  {op: correct, field: service.vehicle_type, value: "pickup_8ft",
+   previous_value: "tata_ace", evidence: "the 8-foot pickup instead", confidence: 1.0}

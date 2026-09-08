@@ -198,6 +198,29 @@ def test_boolean_fields_are_acknowledged_either_way(field, value, expect_in, exp
     assert expect_in in ack
 
 
+def test_an_explicit_vehicle_change_is_acknowledged():
+    """Regression: service.vehicle_type had no _simple_fragment branch at
+    all, so an explicit "give me a bigger truck"-style correction landed in
+    state correctly but was acknowledged with nothing -- the agent silently
+    accepted the request without ever confirming it, indistinguishable from
+    the request being ignored in a voice-only interface with no transcript
+    to check. Found the same way the boolean-field regression above was:
+    by reading real generated output, not from a narrower unit test."""
+    patch = Patch(op=PatchOp.SET, field="service.vehicle_type", value="tempo_14ft")
+    state = _apply(BookingState(), patch)
+    ack = compose_acknowledgment([patch], state)
+    assert ack is not None
+    assert "14-foot tempo" in ack
+
+
+def test_an_explicit_helper_count_change_is_acknowledged():
+    patch = Patch(op=PatchOp.SET, field="service.helpers_required", value=3)
+    state = _apply(BookingState(), patch)
+    ack = compose_acknowledgment([patch], state)
+    assert ack is not None
+    assert "3 helpers" in ack
+
+
 def test_schedule_combines_date_and_time():
     # needs_normalization=True means a raw phrase, not an already-resolved
     # ISO date -- REF is Friday 11 Sep, so "Saturday" resolves to the 12th.

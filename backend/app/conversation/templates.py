@@ -106,6 +106,10 @@ def format_vehicle(vehicle: VehicleType) -> str:
     return _VEHICLE_NAMES[vehicle]
 
 
+def format_helpers(count: int) -> str:
+    return "no extra helpers" if count == 0 else f"{count} helper{'s' if count != 1 else ''}"
+
+
 def format_item(item: Item) -> str:
     if item.quantity <= 1:
         return f"a {item.name}"
@@ -212,6 +216,10 @@ def _simple_fragment(state: BookingState, path: str) -> str | None:
         return "packing help" if get_field(state, path).value else "no packing help needed"
     if path == "service.needs_disassembly":
         return "disassembly needed" if get_field(state, path).value else "no disassembly needed"
+    if path == "service.vehicle_type":
+        return format_vehicle(get_field(state, path).value)
+    if path == "service.helpers_required":
+        return format_helpers(get_field(state, path).value)
     if path == "goods.category":
         return get_field(state, path).value.value.replace("_", " ")
     if path == "booking_type":
@@ -421,9 +429,7 @@ def _confirm_inferred_question(state: BookingState) -> str:
     vehicle = get_field(state, "service.vehicle_type").value
     helpers = get_field(state, "service.helpers_required").value
     vehicle_text = format_vehicle(vehicle)
-    helper_text = (
-        "no extra helpers" if helpers == 0 else f"{helpers} helper{'s' if helpers != 1 else ''}"
-    )
+    helper_text = format_helpers(helpers)
     variants = [
         f"Based on what you're moving, {vehicle_text} with {helper_text} "
         "should do it — sound good?",
