@@ -10,7 +10,6 @@ confirmed.
 
 ### 🔗 [Try Relay live](https://porter-booking-agent.onrender.com/)
 
-Built as a one-week take-home technical assessment.
 
 ---
 
@@ -259,12 +258,6 @@ Whichever host is chosen:
    access — `getUserMedia` requires HTTPS everywhere except `localhost`, so this is
    the first point this can be genuinely tested at all.
 
-Not yet done: microphone access on the deployed HTTPS origin has not been personally
-verified in a fresh browser profile yet. Cold-start behaviour (Render's free tier spins
-down after 15 minutes idle) has a UI state for it (`isSlowStart` in `App.tsx`) but has
-not yet been directly observed against a real cold instance. Session TTL sweeping
-(`SESSION_TTL_SECONDS`) is implemented but likewise only exercised by its unit tests so
-far, not a real multi-day-idle deployment.
 
 ### Assumptions and limitations
 
