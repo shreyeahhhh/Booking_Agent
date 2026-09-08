@@ -1546,6 +1546,49 @@ plus manual verification); both still pass clean.
 
 ---
 
+## Phase 3.13 — Scope guard too strict on natural yes/no and address details
+
+Another live report, after 3.12's fail-open fix had already shipped: "anything else if I
+say related to the booking it's not catching it, like the floor details especially, and
+the yes/no told in natural conversation (yeah, nahh, yup, sure, yes, nope) needs to be
+identified too." Live-probed the guard directly (not assumed) against both categories
+before touching anything.
+
+**Floor/lift details turned out already correct** in every phrasing tested ("third floor,
+no lift", "no elevator, you'll need helpers", "ground floor, no stairs issue" all came back
+allowed). **The real, confirmed bug was an asymmetry in bare reactions**: "yeah", "sure",
+"yup" all passed, but "no", "nah", "nope", and "not really" all came back
+`allowed=False, intent=unrelated` -- a classifier shown one context-free utterance with no
+memory of the pending question has no topical keyword to latch onto in a short rejection,
+and apparently defaults to "unrelated" for exactly that shape while a short *agreement*
+reads as friendly small talk instead. Separately, `fastpath.py`'s own `_NO_PHRASES` set had
+"nah" but not "nahh" -- the literal word from the report -- so that one spelling fell
+through the deterministic layer entirely, on top of the guard-level bug.
+
+Fixed at both layers:
+- `app/conversation/fastpath.py`: added "nahh" to `_NO_PHRASES`.
+- `app/llm/scope_guard.py`: named floor/lift/stairs access explicitly under
+  pickup_location/drop_location (defence-in-depth, since it was already working); added an
+  explicit rule that a bare agreement *or disagreement* ("yes"/"no"/"nah"/"nahh"/"nope"/"not
+  really"/etc.) is allowed as `booking_confirmation` regardless of topical content, with the
+  reasoning spelled out (a classifier with no conversation memory cannot safely treat a
+  short reply as unrelated without that reasoning applying equally to "yes"); added a
+  general "when genuinely unsure, choose ALLOWED" clause, since this guard's job is to catch
+  clearly unrelated requests, not to demand a booking keyword in every in-scope utterance.
+
+Re-probed live after the change: every previously-failing case (`no`, `nah`, `nahh`,
+`nope`, `not really`) now returns `allowed=True`; a first pass still missed "not
+interested" specifically (read as declining the whole conversation rather than a proposal)
+-- added as one more explicit example and re-verified. The existing off-topic/injection
+cases (`test_scope_guard_live.py`'s required-cases list, the prompt-injection and
+system-prompt-disclosure tests) were re-run unchanged to confirm the looser prompt did not
+also loosen what it is supposed to keep out. New regression coverage:
+`test_a_bare_rejection_is_allowed_not_unrelated` and `test_floor_and_lift_details_are_allowed`
+in `test_scope_guard_live.py`; `nahh` added to `test_fastpath.py`'s existing rejection-phrase
+parametrization.
+
+---
+
 ## Phase 4 — Deployment and resilience (Day 4)
 
 **Deploy first thing in the morning, before any polish.**

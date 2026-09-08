@@ -94,6 +94,9 @@ _NO_PHRASES = frozenset(
         "no",
         "nope",
         "nah",
+        "nahh",  # "nah" said with more emphasis -- a real transcript, not in the
+        # set until this was reported live: "nah" matched but "nahh" silently
+        # fell through to the (much less reliable) LLM guard/extractor layers.
         "negative",
         "incorrect",
         "wrong",

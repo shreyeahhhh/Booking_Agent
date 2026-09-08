@@ -102,3 +102,55 @@ async def test_a_thank_you_is_allowed_as_small_talk(utterance: str):
     client = AsyncGroq(api_key=_settings.groq_api_key)
     decision = await classify(client, model=_settings.scope_guard_model, utterance=utterance)
     assert decision.allowed is True, f"{utterance!r} was rejected: intent={decision.intent.value}"
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "no",
+        "nah",
+        "nahh",
+        "nope",
+        "not really",
+        "not interested",
+        "don't want that",
+    ],
+)
+async def test_a_bare_rejection_is_allowed_not_unrelated(utterance: str):
+    """Live-reproduced report: "if I say anything related to the booking,
+    it's not catching it ... the yes/no told in natural conversation needs
+    to be identified too". Before the prompt was loosened, every one of
+    these bare negatives came back allowed=False/unrelated even though the
+    equivalent bare affirmatives ("yeah", "sure", "yup") already passed --
+    an asymmetry a classifier with no memory of the pending question has no
+    way to notice on its own without being told about it explicitly. Most
+    of these never reach this module in practice (fastpath.py's own
+    yes/no phrase set catches them first for a pending confirm/boolean
+    field), but this is the layer that has to get it right whenever that
+    precondition does not hold -- a longer or less exact rejection than
+    fastpath's curated set (like "not interested", "don't want that"), or
+    a phase fastpath declines to handle at all."""
+    client = AsyncGroq(api_key=_settings.groq_api_key)
+    decision = await classify(client, model=_settings.scope_guard_model, utterance=utterance)
+    assert decision.allowed is True, f"{utterance!r} was rejected: intent={decision.intent.value}"
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "It's on the third floor, there's no lift.",
+        "No, there's no elevator.",
+        "Ground floor, no stairs issue.",
+        "3rd floor, no lift, and there's a narrow staircase.",
+        "There is no elevator, so you'll need helpers to carry it up.",
+    ],
+)
+async def test_floor_and_lift_details_are_allowed(utterance: str):
+    """Explicit user report: "floor details especially" were not being
+    caught. Locked in as regression coverage now that the prompt names
+    floor/lift/stairs access under pickup_location/drop_location
+    directly, rather than leaving the guard to infer that a practical
+    address detail counts as describing the pickup or drop point."""
+    client = AsyncGroq(api_key=_settings.groq_api_key)
+    decision = await classify(client, model=_settings.scope_guard_model, utterance=utterance)
+    assert decision.allowed is True, f"{utterance!r} was rejected: intent={decision.intent.value}"

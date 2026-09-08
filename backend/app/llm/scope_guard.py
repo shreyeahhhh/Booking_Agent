@@ -131,13 +131,13 @@ a word associated with an unrelated task.
 
 ALLOWED -- pick the closest intent:
   booking_start                 starting or describing a new booking
-  pickup_location                stating or asking about the pickup point
-  drop_location                  stating or asking about the drop-off point
+  pickup_location                stating or asking about the pickup point, its floor, or lift/elevator/stairs access
+  drop_location                  stating or asking about the drop-off point, its floor, or lift/elevator/stairs access
   vehicle_selection               choosing or asking about a vehicle/truck type
   package_details                 describing what is being sent or moved
   price_estimation                 asking about cost, price, or an estimate
   scheduling                       stating or asking about date or time
-  booking_confirmation              confirming, reviewing, or correcting a summary
+  booking_confirmation              confirming, reviewing, correcting, or rejecting a summary
   booking_modification              changing a detail already given
   cancellation                      cancelling the booking
   delivery_time                     asking how long delivery or pickup will take
@@ -152,7 +152,30 @@ statement -- is booking_start or pickup_location/drop_location, not
 unrelated. Describing a booking is not the same shape as asking the
 assistant to perform some unrelated task; do not let the imperative
 phrasing ("pick up...", "deliver...") read as a command to you instead of
-as the user's own request.
+as the user's own request. A detail about the pickup or drop address
+itself -- what floor it is on, whether there is a lift, stairs, narrow
+access -- is pickup_location/drop_location the same way a street name is,
+never unrelated just because it is a short, practical detail rather than a
+full sentence.
+
+A bare or near-bare reaction -- an agreement, disagreement, or
+acknowledgement with no other content ("yes", "yeah", "yup", "sure",
+"okay", "no", "nah", "nahh", "nope", "not really", "I don't think so",
+"that's fine", "go ahead") -- is ALLOWED as booking_confirmation, even
+though it names no booking keyword. You see only this one utterance, with
+no memory of what the assistant just asked; in a live booking call a bare
+reaction like this is always the user answering or reacting to that
+question, never a non-sequitur about something else. Do not classify a
+short reply as unrelated just because it is short -- that reasoning would
+have to apply equally to "yes" and "no", and only one of those is safe to
+get wrong.
+
+When genuinely unsure -- the utterance is short, ambiguous, or could
+plausibly be continuing or reacting to an active booking conversation --
+choose ALLOWED. This guard exists to catch requests that are clearly
+unrelated (maths, trivia, code, jokes, general knowledge), not to demand
+that every in-scope utterance name a booking keyword before it is let
+through.
 
 NOT ALLOWED -- intent "unrelated": general knowledge, maths, code, writing \
 tasks, jokes, opinions, personal advice, or any topic that does not help \
@@ -165,6 +188,10 @@ THIS booking, not by surface keywords:
   "what is the capital of India" -> NOT ALLOWED (unrelated)
   "I don't know my exact pickup address, what should I do" -> ALLOWED (clarification)
   "pick up a package from Kakkanad and deliver it to Edappally" -> ALLOWED (booking_start)
+  "third floor, no lift" -> ALLOWED (pickup_location)
+  "nahh" -> ALLOWED (booking_confirmation)
+  "not really" -> ALLOWED (booking_confirmation)
+  "not interested" -> ALLOWED (booking_confirmation)
 
 Respond with exactly one JSON object: {"allowed": <bool>, "intent": <one \
 of the values above>}. No other text.

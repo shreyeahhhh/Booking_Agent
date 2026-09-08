@@ -94,7 +94,7 @@ def test_common_affirmation_and_rejection_phrasings_at_review():
     for phrase in ("yeah", "yep", "that's right", "sounds good", "confirmed"):
         result = classify(phrase, phase=Phase.REVIEW, decision=None)
         assert result.extraction.intent == Intent.CONFIRM
-    for phrase in ("nope", "nah", "incorrect", "wrong"):
+    for phrase in ("nope", "nah", "nahh", "incorrect", "wrong"):
         result = classify(phrase, phase=Phase.REVIEW, decision=None)
         assert result.extraction.intent == Intent.REJECT
 
