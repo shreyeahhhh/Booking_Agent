@@ -1650,6 +1650,47 @@ with_no_patch` and `test_naming_a_specific_vehicle_produces_a_correction_patch` 
 
 ---
 
+## Phase 3.15 — The agent was never actually speaking on mobile
+
+Live report: "when I'm opening the link in mobile, the voice isn't working, the agent isn't
+speaking out loud." Root cause is a well-known mobile browser restriction, not a bug specific
+to this codebase, but this codebase was squarely in the failure shape for it: iOS Safari (and
+Chrome's autoplay policy more leniently) only allows `HTMLMediaElement.play()` when it is
+invoked *synchronously inside a real user-gesture event handler*. Every `audio.play()` call in
+`audio.ts` happened asynchronously instead -- after a `fetch` resolved, or after
+`useRecorder.ts`'s own VAD timer auto-stopped a recording -- so on a fresh mobile page load,
+every single response was silently failing to play. Doubly silent: the rejected promise was
+swallowed by `speak()`'s own "one malformed chunk should not silence the rest" catch, so
+nothing played and nothing looked broken either -- no error, no console warning, just quiet.
+
+Fixed with the standard mitigation for this exact restriction: a single, reused `<audio>`
+element, "unlocked" once by playing (and immediately pausing) a genuinely silent clip
+synchronously inside a real gesture -- once one specific element has successfully played from
+inside a gesture, that same element instance can keep being played from async code for the
+rest of the page's life, but a *new* `Audio()` built later would not inherit that, which is
+why the old code (a fresh `new Audio()` per chunk, every turn) never recovered even after the
+user had already tapped the mic once. `unlockAudioPlayback()` is now called synchronously as
+the first line of every real gesture handler that can lead to playback: the mic button, the
+"new booking" button, and `LocationLinkInput`'s submit. The silent clip itself (100ms of true
+8-bit PCM silence) was generated with Python's `wave` module rather than hand-built or pasted
+from memory, so its bytes are known-correct rather than assumed.
+
+This sandbox has no real mobile browser to reproduce iOS Safari's strict gesture-gating
+against (the same class of gap as having no real microphone) -- confirmed instead that this
+specific automated browser context allows gesture-less autoplay unconditionally, so the
+original bug and the fix cannot be *directly* demonstrated here either way. What *was* verified
+live in a real running instance: `tsc -b && vite build` clean; the full booking flow through
+`LocationLinkInput` (a real network round trip, no microphone needed) completes with no console
+errors and the shared element correctly reused (`instances: 1` across repeated turns, not
+growing); and, most importantly, `speak()` called directly with three chunks plays them
+strictly in order (`play#1`, `play#2`, `play#3`, then `finished`) with no stuck listeners --
+the exact regression risk in reusing one element across chunks instead of a disposable one per
+chunk. The fix pattern itself is the extensively documented, industry-standard one for this
+exact platform restriction (Howler.js, Ionic, and WebKit's own developer notes all describe
+the same unlock-once-per-element technique).
+
+---
+
 ## Phase 4 — Deployment and resilience (Day 4)
 
 **Deploy first thing in the morning, before any polish.**

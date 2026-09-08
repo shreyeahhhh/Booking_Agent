@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { submitLocationLink } from "./api";
 import type { TurnResponse } from "./api";
+import { unlockAudioPlayback } from "./audio";
 
 /** The "paste an exact address instead" affordance next to the From/To
  * rows. Voice stays the primary way to answer -- this is a narrow,
@@ -44,6 +45,7 @@ export default function LocationLinkInput({ field, sessionId, onResult, onError 
 
   const submit = () => {
     if (!sessionId || !url.trim() || submitting) return;
+    unlockAudioPlayback(); // this can trigger playResponse too -- same gesture requirement as the mic button
     setSubmitting(true);
     submitLocationLink(sessionId, field, url.trim())
       .then((response) => {

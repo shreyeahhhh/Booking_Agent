@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BookingStateShape, TurnResponse } from "./api";
 import { createSession, postTurn } from "./api";
 import type { SpeechHandle } from "./audio";
-import { speak } from "./audio";
+import { speak, unlockAudioPlayback } from "./audio";
 import ConfirmationModal from "./ConfirmationModal";
 import { displayValue, formatDate, formatItems, prettify } from "./format";
 import LocationLinkInput from "./LocationLinkInput";
@@ -210,6 +210,7 @@ export default function App() {
   // below would otherwise still be holding from the finished booking, then
   // asks for a brand new session exactly like the very first page load did.
   const startNewBooking = useCallback(() => {
+    unlockAudioPlayback(); // a real click -- re-arms playback the same way the mic button does
     stopSpeaking();
     setShowConfirmation(false);
     setShowReviewCard(false);
@@ -276,6 +277,10 @@ export default function App() {
   const visualizerActive = status === "recording";
 
   const handleMicClick = () => {
+    // Must be the first thing in this handler, synchronously, on every tap --
+    // see audio.ts's unlockAudioPlayback for why (mobile browsers block
+    // playback that does not originate from inside a real gesture like this).
+    unlockAudioPlayback();
     if (status === "idle" || status === "error") {
       stopSpeaking(); // talking over the agent is how you interrupt it
       void start();
